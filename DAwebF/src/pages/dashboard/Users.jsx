@@ -26,6 +26,7 @@ import GridViewRoundedIcon from "@mui/icons-material/GridViewRounded";
 import ViewListRoundedIcon from "@mui/icons-material/ViewListRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import PersonRoundedIcon from "@mui/icons-material/PersonRounded";
+import FilterAltRoundedIcon from "@mui/icons-material/FilterAltRounded";
 
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../app/providers/AuthProvider";
@@ -200,8 +201,11 @@ export default function Users() {
   const [departments, setDepartments] = useState([]);
 
   const [view, setView] = useState("grid"); // grid | list
+  const [filterOpen, setFilterOpen] = useState(false);
   const [q, setQ] = useState("");
   const [deptFilter, setDeptFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [sort, setSort] = useState("name"); // name | created
 
   // Admin dialogs (kept)
@@ -243,7 +247,6 @@ export default function Users() {
   useEffect(() => {
     if (!canAccess) return;
     loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAccess]);
 
   const filtered = useMemo(() => {
@@ -272,6 +275,14 @@ export default function Users() {
     if (deptFilter) {
       rows = rows.filter((u) => String(u.department || "").toLowerCase() === String(deptFilter).toLowerCase());
     }
+    if (roleFilter !== "all") {
+      rows = rows.filter((u) => String(u.role_key || "").toUpperCase() === roleFilter);
+    }
+    if (statusFilter === "active") {
+      rows = rows.filter((u) => u.is_active === true);
+    } else if (statusFilter === "inactive") {
+      rows = rows.filter((u) => u.is_active !== true);
+    }
 
     // search
     const s = String(q || "").trim().toLowerCase();
@@ -290,7 +301,15 @@ export default function Users() {
     }
 
     return rows;
-  }, [users, deptFilter, q, sort, me, role]);
+  }, [users, deptFilter, roleFilter, statusFilter, q, sort, me, role]);
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (deptFilter) n += 1;
+    if (roleFilter !== "all") n += 1;
+    if (statusFilter !== "all") n += 1;
+    return n;
+  }, [deptFilter, roleFilter, statusFilter]);
 
   function openUser(u) {
   const email = u.company_username_norm || u.company_username;
@@ -462,13 +481,13 @@ export default function Users() {
       <Paper className="glass" elevation={0} sx={{ p: 2 }}>
         <Stack spacing={1.5}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "stretch", md: "center" }} justifyContent="space-between">
-            <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "stretch", md: "center" }}>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "stretch", md: "center" }} sx={{ width: "100%" }}>
               <TextField
                 size="small"
                 placeholder="Search users…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                sx={{ minWidth: { xs: "100%", md: 340 } }}
+                sx={{ minWidth: { xs: "100%", md: 340 }, flex: 1 }}
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
@@ -478,29 +497,15 @@ export default function Users() {
                 }}
               />
 
-              {role === ROLE_C_SUITE ? (
-                <FormControl size="small" sx={{ minWidth: 220 }}>
-                  <InputLabel>Department</InputLabel>
-                  <Select value={deptFilter} label="Department" onChange={(e) => setDeptFilter(e.target.value)}>
-                    <MenuItem value="">All departments</MenuItem>
-                    {departments.map((d) => (
-                      <MenuItem key={d.id} value={d.id}>
-                        {d.label}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              ) : (
-                <Chip size="small" variant="outlined" label={`Department: ${me?.department || "(not set)"}`} />
-              )}
-
-              <FormControl size="small" sx={{ minWidth: 160 }}>
-                <InputLabel>Sort</InputLabel>
-                <Select value={sort} label="Sort" onChange={(e) => setSort(e.target.value)}>
-                  <MenuItem value="name">Name</MenuItem>
-                  <MenuItem value="created">Recently created</MenuItem>
-                </Select>
-              </FormControl>
+              <Button
+                size="small"
+                variant={activeFilterCount ? "contained" : "outlined"}
+                startIcon={<FilterAltRoundedIcon />}
+                onClick={() => setFilterOpen(true)}
+                sx={{ fontWeight: 800, minWidth: { xs: "100%", md: "auto" } }}
+              >
+                Filters {activeFilterCount ? `(${activeFilterCount})` : ""}
+              </Button>
 
               <Chip size="small" variant="outlined" label={`Total: ${filtered.length}`} />
             </Stack>
@@ -517,6 +522,98 @@ export default function Users() {
           </Stack>
 
           {error ? <Typography color="error">{error}</Typography> : null}
+
+          <Dialog
+            open={filterOpen}
+            onClose={() => setFilterOpen(false)}
+            fullWidth
+            maxWidth="sm"
+            scroll="paper"
+            PaperProps={{
+              sx: {
+                maxWidth: "none",
+                width: { xs: "calc(100vw - 12px)", sm: "min(96vw, 760px)" },
+                maxHeight: "calc(100dvh - 32px)",
+                m: { xs: 1, sm: 2 },
+                overflow: "hidden",
+                borderRadius: 3,
+                border: "1px solid var(--border-1)",
+              },
+            }}
+          >
+            <DialogTitle sx={{ pb: 1, borderBottom: "1px solid var(--border-1)", fontWeight: 800 }}>User Filters</DialogTitle>
+            <DialogContent
+              sx={{
+                display: "grid",
+                gap: 1.5,
+                pt: 2.5,
+                pb: 2,
+                overflowY: "auto",
+                "& .MuiTextField-root, & .MuiFormControl-root": { minWidth: 0 },
+                "& .MuiInputBase-root": { minHeight: 42 },
+                "& .MuiInputLabel-root": { fontSize: 13 },
+                "& .MuiSelect-select": { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+              }}
+            >
+              {role === ROLE_C_SUITE ? (
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Department</InputLabel>
+                  <Select value={deptFilter} label="Department" onChange={(e) => setDeptFilter(e.target.value)}>
+                    <MenuItem value="">All departments</MenuItem>
+                    {departments.map((d) => (
+                      <MenuItem key={d.id} value={d.id}>
+                        {d.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              ) : (
+                <Chip size="small" variant="outlined" label={`Department: ${me?.department || "(not set)"}`} />
+              )}
+
+              <FormControl size="small" fullWidth>
+                <InputLabel>Role</InputLabel>
+                <Select value={roleFilter} label="Role" onChange={(e) => setRoleFilter(e.target.value)}>
+                  <MenuItem value="all">All roles</MenuItem>
+                  <MenuItem value={ROLE_C_SUITE}>C-Suite</MenuItem>
+                  <MenuItem value={ROLE_DEPT_HEAD}>Department Head</MenuItem>
+                  <MenuItem value={ROLE_DEPT_MEMBER}>Department Member</MenuItem>
+                </Select>
+              </FormControl>
+
+              <FormControl size="small" fullWidth>
+                <InputLabel>Status</InputLabel>
+                <Select value={statusFilter} label="Status" onChange={(e) => setStatusFilter(e.target.value)}>
+                  <MenuItem value="all">All</MenuItem>
+                  <MenuItem value="active">Active</MenuItem>
+                  <MenuItem value="inactive">Inactive</MenuItem>
+                </Select>
+              </FormControl>
+
+              <FormControl size="small" fullWidth>
+                <InputLabel>Sort</InputLabel>
+                <Select value={sort} label="Sort" onChange={(e) => setSort(e.target.value)}>
+                  <MenuItem value="name">Name</MenuItem>
+                  <MenuItem value="created">Recently created</MenuItem>
+                </Select>
+              </FormControl>
+            </DialogContent>
+            <DialogActions sx={{ borderTop: "1px solid var(--border-1)", px: 2, py: 1.25, background: "var(--surface-2)" }}>
+              <Button
+                onClick={() => {
+                  setDeptFilter("");
+                  setRoleFilter("all");
+                  setStatusFilter("all");
+                  setSort("name");
+                }}
+              >
+                Clear
+              </Button>
+              <Button variant="contained" onClick={() => setFilterOpen(false)}>
+                Apply
+              </Button>
+            </DialogActions>
+          </Dialog>
 
           <Divider sx={{ borderColor: "var(--border-1)" }} />
 

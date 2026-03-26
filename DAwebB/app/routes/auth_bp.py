@@ -127,6 +127,8 @@ def forgot_password():
     u = db[COL_USERS].find_one({"company_username_norm": email})
     if not u:
         return jsonify({"ok": False, "error": "User not found"}), 404
+    if u.get("is_active") is False:
+        return jsonify({"ok": False, "error": "Account is disabled"}), 403
 
     db[COL_USERS].update_one(
         {"_id": u["_id"]},

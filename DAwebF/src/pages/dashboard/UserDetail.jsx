@@ -3,6 +3,10 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   Paper,
   Stack,
@@ -14,14 +18,22 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   TextField,
+  MenuItem,
   Typography,
+  useMediaQuery,
   CircularProgress,
   IconButton,
   Tooltip,
+  List,
+  ListItemButton,
+  ListItemText,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import DownloadRoundedIcon from "@mui/icons-material/DownloadRounded";
+import FilterAltRoundedIcon from "@mui/icons-material/FilterAltRounded";
 import ViewModuleRoundedIcon from "@mui/icons-material/ViewModuleRounded";
 import ViewListRoundedIcon from "@mui/icons-material/ViewListRounded";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
@@ -98,6 +110,63 @@ function fmtTime(ts) {
   }
 }
 
+function hhmmFromTs(ts) {
+  if (!ts) return "";
+  try {
+    const d = new Date(ts);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  } catch {
+    return "";
+  }
+}
+
+function dateFromTs(ts) {
+  if (!ts) return "";
+  try {
+    return ymdLocal(new Date(ts));
+  } catch {
+    return "";
+  }
+}
+
+function inTimeRange(hhmm, start, end) {
+  if (!hhmm) return false;
+  if (!start && !end) return true;
+  if (start && end) return hhmm >= start && hhmm <= end;
+  if (start) return hhmm >= start;
+  return hhmm <= end;
+}
+
+function normalizeTime24(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const ampm = raw.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (ampm) {
+    let hh = Number(ampm[1]);
+    const mm = Number(ampm[2]);
+    const mer = ampm[3].toUpperCase();
+    if (Number.isNaN(hh) || Number.isNaN(mm) || mm < 0 || mm > 59 || hh < 1 || hh > 12) return "";
+    if (mer === "AM") hh = hh === 12 ? 0 : hh;
+    if (mer === "PM") hh = hh === 12 ? 12 : hh + 12;
+    return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  }
+
+  const m24 = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (m24) return `${String(Number(m24[1])).padStart(2, "0")}:${m24[2]}`;
+  return "";
+}
+
+function inDateRange(ymd, from, to) {
+  if (!ymd) return false;
+  if (!from && !to) return true;
+  if (from && to) return ymd >= from && ymd <= to;
+  if (from) return ymd >= from;
+  return ymd <= to;
+}
+
 function logScreenshotId(r) {
   const v = r?.screenshot_id ?? r?.screenshotId;
   if (v === null || v === undefined || v === "") return null;
@@ -161,8 +230,174 @@ const logCellWrap = {
   borderColor: "var(--border-1)",
 };
 
-function LogsTable({ rows = [] }) {
+function FilterPanelLayout({ items, activeKey, onSelect, title, children }) {
+  return (
+    <Box
+      sx={{
+        border: "1px solid var(--border-1)",
+        borderRadius: 1.5,
+        overflow: "hidden",
+        display: "grid",
+        gridTemplateColumns: "210px minmax(0, 1fr)",
+        minHeight: 340,
+      }}
+    >
+      <Box sx={{ borderRight: "1px solid var(--border-1)", background: "var(--surface-2)" }}>
+        <List disablePadding sx={{ py: 0.5 }}>
+          {items.map((item) => {
+            const isActive = activeKey === item.key;
+            return (
+              <ListItemButton
+                key={item.key}
+                selected={isActive}
+                onClick={() => onSelect(item.key)}
+                sx={{
+                  mx: 0.75,
+                  my: 0.25,
+                  borderRadius: 1,
+                  border: "1px solid transparent",
+                  "&.Mui-selected": {
+                    borderColor: "var(--border-2)",
+                    backgroundColor: "rgba(59,130,246,0.12)",
+                  },
+                  "&.Mui-selected:hover": {
+                    backgroundColor: "rgba(59,130,246,0.16)",
+                  },
+                }}
+              >
+                <ListItemText
+                  primary={item.label}
+                  primaryTypographyProps={{ fontSize: 13, fontWeight: isActive ? 800 : 600, noWrap: true }}
+                />
+              </ListItemButton>
+            );
+          })}
+        </List>
+      </Box>
+      <Box sx={{ p: 2, overflowY: "auto" }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1.25 }}>
+          {title}
+        </Typography>
+        {children}
+      </Box>
+    </Box>
+  );
+}
+
+function LogsTable({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows, ensuringAllRows = false }) {
+  const theme = useTheme();
+  const fullScreenFilters = useMediaQuery(theme.breakpoints.down("sm"));
   const [openingShot, setOpeningShot] = useState(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [operationFilter, setOperationFilter] = useState("all");
+  const [hasScreenshot, setHasScreenshot] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [timeTo, setTimeTo] = useState("");
+  const [sortBy, setSortBy] = useState("ts");
+  const [sortDir, setSortDir] = useState("desc");
+  const [activeFilterSection, setActiveFilterSection] = useState("dateTime");
+
+  const categoryOptions = useMemo(() => {
+    const set = new Set();
+    rows.forEach((r) => {
+      const v = String(r?.category || "").trim();
+      if (v) set.add(v);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const operationOptions = useMemo(() => {
+    const set = new Set();
+    rows.forEach((r) => {
+      const v = String(r?.operation || "").trim();
+      if (v) set.add(v);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      const sid = logScreenshotId(r);
+      const d = dateFromTs(r.ts);
+      const t = hhmmFromTs(r.ts);
+      if (categoryFilter !== "all" && safeText(r.category) !== categoryFilter) return false;
+      if (operationFilter !== "all" && safeText(r.operation) !== operationFilter) return false;
+      if (hasScreenshot === "yes" && !sid) return false;
+      if (hasScreenshot === "no" && sid) return false;
+      if (!inDateRange(d, dateFrom, dateTo)) return false;
+      if (!inTimeRange(t, normalizeTime24(timeFrom), normalizeTime24(timeTo))) return false;
+
+      if (!q) return true;
+      const blob = [
+        fmtDate(r.ts),
+        fmtTime(r.ts),
+        safeText(r.application),
+        safeText(r.window_title),
+        safeText(r.category),
+        safeText(r.operation),
+        safeText(r.details || r.detail),
+        safeText(sid || ""),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return blob.includes(q);
+    });
+  }, [rows, search, categoryFilter, operationFilter, hasScreenshot, dateFrom, dateTo, timeFrom, timeTo]);
+
+  const visibleRows = useMemo(() => {
+    const out = [...filteredRows];
+    out.sort((a, b) => {
+      const sidA = logScreenshotId(a) ? 1 : 0;
+      const sidB = logScreenshotId(b) ? 1 : 0;
+      const map = {
+        date: fmtDate(a.ts).localeCompare(fmtDate(b.ts)),
+        time: fmtTime(a.ts).localeCompare(fmtTime(b.ts)),
+        application: safeText(a.application).localeCompare(safeText(b.application)),
+        window_title: safeText(a.window_title).localeCompare(safeText(b.window_title)),
+        category: safeText(a.category).localeCompare(safeText(b.category)),
+        operation: safeText(a.operation).localeCompare(safeText(b.operation)),
+        details: safeText(a.details || a.detail).localeCompare(safeText(b.details || b.detail)),
+        screenshot: sidA - sidB,
+        ts: String(a.ts || "").localeCompare(String(b.ts || "")),
+      };
+      const cmp = map[sortBy] ?? map.ts;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return out;
+  }, [filteredRows, sortBy, sortDir]);
+
+  function onSort(col) {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortBy(col);
+    setSortDir(col === "ts" ? "desc" : "asc");
+  }
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (categoryFilter !== "all") n += 1;
+    if (operationFilter !== "all") n += 1;
+    if (hasScreenshot !== "all") n += 1;
+    if (dateFrom || dateTo) n += 1;
+    if (timeFrom || timeTo) n += 1;
+    return n;
+  }, [categoryFilter, operationFilter, hasScreenshot, dateFrom, dateTo, timeFrom, timeTo]);
+
+  const hasActiveFilter = Boolean(
+    search || categoryFilter !== "all" || operationFilter !== "all" || hasScreenshot !== "all" || dateFrom || dateTo || timeFrom || timeTo
+  );
+
+  useEffect(() => {
+    if (!hasActiveFilter || !hasMore || !onEnsureAllRows) return;
+    onEnsureAllRows();
+  }, [hasActiveFilter, hasMore, onEnsureAllRows]);
 
   async function openScreenshot(sid) {
     if (!sid) return;
@@ -176,6 +411,16 @@ function LogsTable({ rows = [] }) {
     }
   }
 
+  function SortHead({ id, label, align = "left" }) {
+    return (
+      <TableCell align={align}>
+        <TableSortLabel active={sortBy === id} direction={sortBy === id ? sortDir : "asc"} onClick={() => onSort(id)}>
+          {label}
+        </TableSortLabel>
+      </TableCell>
+    );
+  }
+
   return (
     <Box sx={{ width: "100%", minWidth: 0 }}>
       <Stack direction="row" spacing={1} sx={{ mb: 1 }} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
@@ -183,7 +428,7 @@ function LogsTable({ rows = [] }) {
           size="small"
           variant="outlined"
           startIcon={<DownloadRoundedIcon />}
-          onClick={() => downloadLogsCSV(rows)}
+          onClick={() => downloadLogsCSV(visibleRows)}
           sx={{ fontWeight: 900 }}
         >
           CSV
@@ -198,6 +443,122 @@ function LogsTable({ rows = [] }) {
           PDF
         </Button>
       </Stack>
+
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.25 }} useFlexGap flexWrap="wrap">
+        <TextField
+          size="small"
+          label="Search"
+          placeholder="App, title, details, screenshot id..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ minWidth: { xs: "100%", sm: 280 }, flex: 1 }}
+        />
+        <Button
+          size="small"
+          variant={activeFilterCount ? "contained" : "outlined"}
+          startIcon={<FilterAltRoundedIcon />}
+          onClick={() => setFilterOpen(true)}
+          sx={{ fontWeight: 800, minWidth: { xs: "100%", sm: "auto" } }}
+        >
+          Filters {activeFilterCount ? `(${activeFilterCount})` : ""}
+        </Button>
+      </Stack>
+
+      <Stack direction="row" spacing={1} sx={{ mb: 1 }} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Chip size="small" variant="outlined" label={`Rows: ${visibleRows.length}/${totalRows || rows.length}`} />
+        {ensuringAllRows ? <Chip size="small" color="info" variant="outlined" label="Loading all rows for filters..." /> : null}
+      </Stack>
+      <Typography variant="caption" className="muted" sx={{ display: "block", mb: 1 }}>
+        Excel-like controls: search, filters, sortable headers, CSV export of current view.
+      </Typography>
+
+      <Dialog
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        fullWidth
+        maxWidth="sm"
+        fullScreen={fullScreenFilters}
+        scroll="paper"
+        PaperProps={{
+          sx: {
+            maxWidth: "none",
+            width: { xs: "100%", sm: "min(92vw, 680px)" },
+            minHeight: { xs: "100dvh", sm: 460 },
+            maxHeight: { xs: "100dvh", sm: "calc(100dvh - 64px)" },
+            m: { xs: 0, sm: 2 },
+            overflow: "hidden",
+            borderRadius: { xs: 0, sm: 3 },
+            border: "1px solid var(--border-1)",
+          },
+        }}
+      >
+        <DialogTitle sx={{ pb: 1, borderBottom: "1px solid var(--border-1)", fontWeight: 800 }}>Filters</DialogTitle>
+        <DialogContent sx={{ pt: 2, pb: 2, overflowY: "auto" }}>
+          <FilterPanelLayout
+            items={[
+              { key: "dateTime", label: "Date & Time" },
+              { key: "category", label: "Categories" },
+              { key: "operation", label: "Operation" },
+              { key: "screenshot", label: "Screenshot" },
+            ]}
+            activeKey={activeFilterSection}
+            onSelect={setActiveFilterSection}
+            title={
+              activeFilterSection === "dateTime"
+                ? "Date & Time"
+                : activeFilterSection === "category"
+                  ? "Categories"
+                  : activeFilterSection === "operation"
+                    ? "Operation"
+                    : "Screenshot"
+            }
+          >
+            <Stack spacing={1.25}>
+              {activeFilterSection === "dateTime" ? (
+                <>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <TextField size="small" label="Date from" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth />
+                    <TextField size="small" label="Date to" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth />
+                  </Stack>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <TextField size="small" label="Time from (24h)" placeholder="HH:mm" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} fullWidth />
+                    <TextField size="small" label="Time to (24h)" placeholder="HH:mm" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} fullWidth />
+                  </Stack>
+                </>
+              ) : null}
+              {activeFilterSection === "category" ? (
+                <TextField size="small" select label="Category" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} fullWidth>
+                  <MenuItem value="all">All</MenuItem>
+                  {categoryOptions.map((v) => (
+                    <MenuItem key={v} value={v}>{v}</MenuItem>
+                  ))}
+                </TextField>
+              ) : null}
+              {activeFilterSection === "operation" ? (
+                <TextField size="small" select label="Operation" value={operationFilter} onChange={(e) => setOperationFilter(e.target.value)} fullWidth>
+                  <MenuItem value="all">All</MenuItem>
+                  {operationOptions.map((v) => (
+                    <MenuItem key={v} value={v}>{v}</MenuItem>
+                  ))}
+                </TextField>
+              ) : null}
+              {activeFilterSection === "screenshot" ? (
+                <TextField size="small" select label="Screenshot" value={hasScreenshot} onChange={(e) => setHasScreenshot(e.target.value)} fullWidth>
+                  <MenuItem value="all">All</MenuItem>
+                  <MenuItem value="yes">Has screenshot</MenuItem>
+                  <MenuItem value="no">No screenshot</MenuItem>
+                </TextField>
+              ) : null}
+            </Stack>
+          </FilterPanelLayout>
+        </DialogContent>
+        <DialogActions sx={{ borderTop: "1px solid var(--border-1)", px: 2, py: 1.25, background: "var(--surface-2)" }}>
+          <Button onClick={() => { setCategoryFilter("all"); setOperationFilter("all"); setHasScreenshot("all"); setDateFrom(""); setDateTo(""); setTimeFrom(""); setTimeTo(""); }}>
+            Clear
+          </Button>
+          <Button variant="contained" onClick={() => setFilterOpen(false)}>Apply</Button>
+        </DialogActions>
+      </Dialog>
 
       <Typography variant="caption" className="muted" sx={{ display: "block", mb: 1 }}>
         Scroll horizontally if needed — full text is shown (no hidden ellipsis).
@@ -247,25 +608,25 @@ function LogsTable({ rows = [] }) {
           </colgroup>
           <TableHead>
             <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Time</TableCell>
-              <TableCell>Application</TableCell>
-              <TableCell>Window title</TableCell>
-              <TableCell>Category</TableCell>
-              <TableCell>Operation</TableCell>
-              <TableCell>Details</TableCell>
-              <TableCell align="center">Screenshot</TableCell>
+              <SortHead id="date" label="Date" />
+              <SortHead id="time" label="Time" />
+              <SortHead id="application" label="Application" />
+              <SortHead id="window_title" label="Window title" />
+              <SortHead id="category" label="Category" />
+              <SortHead id="operation" label="Operation" />
+              <SortHead id="details" label="Details" />
+              <SortHead id="screenshot" label="Screenshot" align="center" />
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.length === 0 ? (
+            {visibleRows.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8}>
-                  <Typography color="text.secondary">No logs for this range.</Typography>
+                  <Typography color="text.secondary">No rows match current filters.</Typography>
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((r, idx) => {
+              visibleRows.map((r, idx) => {
                 const sid = logScreenshotId(r);
                 return (
                   <TableRow key={`${r.ts || ""}_${idx}`} hover>
@@ -536,25 +897,166 @@ function ScreenshotList({ rows = [] }) {
   );
 }
 
-function ScreenshotsSection({ rows = [] }) {
-  const [view, setView] = useState("grid"); // grid | list
+function ScreenshotsSection({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows, ensuringAllRows = false }) {
+  const theme = useTheme();
+  const fullScreenFilters = useMediaQuery(theme.breakpoints.down("sm"));
+  const [view, setView] = useState("grid");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [appFilter, setAppFilter] = useState("all");
+  const [operationFilter, setOperationFilter] = useState("all");
+  const [hasId, setHasId] = useState("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [timeTo, setTimeTo] = useState("");
+  const [sortBy, setSortBy] = useState("ts");
+  const [sortDir, setSortDir] = useState("desc");
+  const [activeFilterSection, setActiveFilterSection] = useState("dateTime");
+
+  const appOptions = useMemo(() => {
+    const set = new Set();
+    rows.forEach((r) => {
+      const v = String(r?.application || "").trim();
+      if (v) set.add(v);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const operationOptions = useMemo(() => {
+    const set = new Set();
+    rows.forEach((r) => {
+      const v = String(r?.operation || r?.label || "").trim();
+      if (v) set.add(v);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      const sid = screenshotLookupKey(r);
+      const d = dateFromTs(r.ts);
+      const t = hhmmFromTs(r.ts);
+      const app = safeText(r.application);
+      const op = safeText(r.operation || r.label);
+      if (appFilter !== "all" && app !== appFilter) return false;
+      if (operationFilter !== "all" && op !== operationFilter) return false;
+      if (hasId === "yes" && !sid) return false;
+      if (hasId === "no" && sid) return false;
+      if (!inDateRange(d, dateFrom, dateTo)) return false;
+      if (!inTimeRange(t, normalizeTime24(timeFrom), normalizeTime24(timeTo))) return false;
+      if (!q) return true;
+      const blob = [safeText(r.ts), app, safeText(r.window_title), op, safeText(r.screenshot_url), safeText(r.file_path), safeText(sid || "")].join(" ").toLowerCase();
+      return blob.includes(q);
+    });
+  }, [rows, search, appFilter, operationFilter, hasId, dateFrom, dateTo, timeFrom, timeTo]);
+
+  const visibleRows = useMemo(() => {
+    const out = [...filteredRows];
+    out.sort((a, b) => {
+      const map = {
+        ts: String(a.ts || "").localeCompare(String(b.ts || "")),
+        application: safeText(a.application).localeCompare(safeText(b.application)),
+        window: safeText(a.window_title).localeCompare(safeText(b.window_title)),
+        operation: safeText(a.operation || a.label).localeCompare(safeText(b.operation || b.label)),
+        hasId: (screenshotLookupKey(a) ? 1 : 0) - (screenshotLookupKey(b) ? 1 : 0),
+      };
+      const cmp = map[sortBy] ?? map.ts;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return out;
+  }, [filteredRows, sortBy, sortDir]);
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (appFilter !== "all") n += 1;
+    if (operationFilter !== "all") n += 1;
+    if (hasId !== "all") n += 1;
+    if (dateFrom || dateTo) n += 1;
+    if (timeFrom || timeTo) n += 1;
+    return n;
+  }, [appFilter, operationFilter, hasId, dateFrom, dateTo, timeFrom, timeTo]);
+
+  const hasActiveFilter = Boolean(search || appFilter !== "all" || operationFilter !== "all" || hasId !== "all" || dateFrom || dateTo || timeFrom || timeTo);
+  useEffect(() => {
+    if (!hasActiveFilter || !hasMore || !onEnsureAllRows) return;
+    onEnsureAllRows();
+  }, [hasActiveFilter, hasMore, onEnsureAllRows]);
 
   return (
     <Box>
-      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
-        <Tooltip title="Grid">
-          <IconButton size="small" onClick={() => setView("grid")} aria-label="Grid view">
-            <ViewModuleRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="List">
-          <IconButton size="small" onClick={() => setView("list")} aria-label="List view">
-            <ViewListRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.25 }} useFlexGap flexWrap="wrap">
+        <TextField size="small" label="Search screenshots" placeholder="Time, app, title, path, id..." value={search} onChange={(e) => setSearch(e.target.value)} sx={{ minWidth: { xs: "100%", sm: 280 }, flex: 1 }} />
+        <Button size="small" variant={activeFilterCount ? "contained" : "outlined"} startIcon={<FilterAltRoundedIcon />} onClick={() => setFilterOpen(true)} sx={{ fontWeight: 800, minWidth: { xs: "100%", sm: "auto" } }}>
+          Filters {activeFilterCount ? `(${activeFilterCount})` : ""}
+        </Button>
+      </Stack>
+      <Stack direction="row" spacing={1} sx={{ mb: 1 }} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Chip size="small" variant="outlined" label={`Rows: ${visibleRows.length}/${totalRows || rows.length}`} />
+        {ensuringAllRows ? <Chip size="small" color="info" variant="outlined" label="Loading all rows for filters..." /> : null}
+        <TextField size="small" select label="Sort by" value={sortBy} onChange={(e) => setSortBy(e.target.value)} sx={{ minWidth: 145 }}>
+          <MenuItem value="ts">Time</MenuItem><MenuItem value="application">Application</MenuItem><MenuItem value="window">Window</MenuItem><MenuItem value="operation">Operation</MenuItem><MenuItem value="hasId">Has id</MenuItem>
+        </TextField>
+        <TextField size="small" select label="Direction" value={sortDir} onChange={(e) => setSortDir(e.target.value)} sx={{ minWidth: 130 }}>
+          <MenuItem value="desc">Desc</MenuItem><MenuItem value="asc">Asc</MenuItem>
+        </TextField>
       </Stack>
 
-      {view === "grid" ? <ScreenshotGrid rows={rows} /> : <ScreenshotList rows={rows} />}
+      <Dialog open={filterOpen} onClose={() => setFilterOpen(false)} fullWidth maxWidth="sm" fullScreen={fullScreenFilters} scroll="paper">
+        <DialogTitle sx={{ pb: 1, borderBottom: "1px solid var(--border-1)", fontWeight: 800 }}>Screenshot Filters</DialogTitle>
+        <DialogContent sx={{ pt: 2, pb: 2, overflowY: "auto" }}>
+          <FilterPanelLayout
+            items={[{ key: "dateTime", label: "Date & Time" }, { key: "application", label: "Application" }, { key: "operation", label: "Operation" }, { key: "screenshot", label: "Screenshot Id" }]}
+            activeKey={activeFilterSection}
+            onSelect={setActiveFilterSection}
+            title={activeFilterSection === "dateTime" ? "Date & Time" : activeFilterSection === "application" ? "Application" : activeFilterSection === "operation" ? "Operation" : "Screenshot Id"}
+          >
+            <Stack spacing={1.25}>
+              {activeFilterSection === "dateTime" ? (
+                <>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <TextField size="small" label="Date from" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth />
+                    <TextField size="small" label="Date to" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} InputLabelProps={{ shrink: true }} fullWidth />
+                  </Stack>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <TextField size="small" label="Time from (24h)" placeholder="HH:mm" value={timeFrom} onChange={(e) => setTimeFrom(e.target.value)} fullWidth />
+                    <TextField size="small" label="Time to (24h)" placeholder="HH:mm" value={timeTo} onChange={(e) => setTimeTo(e.target.value)} fullWidth />
+                  </Stack>
+                </>
+              ) : null}
+              {activeFilterSection === "application" ? (
+                <TextField size="small" select label="Application" value={appFilter} onChange={(e) => setAppFilter(e.target.value)} fullWidth>
+                  <MenuItem value="all">All</MenuItem>{appOptions.map((v) => <MenuItem key={v} value={v}>{v}</MenuItem>)}
+                </TextField>
+              ) : null}
+              {activeFilterSection === "operation" ? (
+                <TextField size="small" select label="Operation" value={operationFilter} onChange={(e) => setOperationFilter(e.target.value)} fullWidth>
+                  <MenuItem value="all">All</MenuItem>{operationOptions.map((v) => <MenuItem key={v} value={v}>{v}</MenuItem>)}
+                </TextField>
+              ) : null}
+              {activeFilterSection === "screenshot" ? (
+                <TextField size="small" select label="Screenshot id" value={hasId} onChange={(e) => setHasId(e.target.value)} fullWidth>
+                  <MenuItem value="all">All</MenuItem><MenuItem value="yes">Has id</MenuItem><MenuItem value="no">No id</MenuItem>
+                </TextField>
+              ) : null}
+            </Stack>
+          </FilterPanelLayout>
+        </DialogContent>
+        <DialogActions sx={{ borderTop: "1px solid var(--border-1)", px: 2, py: 1.25, background: "var(--surface-2)" }}>
+          <Button onClick={() => { setAppFilter("all"); setOperationFilter("all"); setHasId("all"); setDateFrom(""); setDateTo(""); setTimeFrom(""); setTimeTo(""); }}>
+            Clear
+          </Button>
+          <Button variant="contained" onClick={() => setFilterOpen(false)}>Apply</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+        <Tooltip title="Grid"><IconButton size="small" onClick={() => setView("grid")} aria-label="Grid view"><ViewModuleRoundedIcon fontSize="small" /></IconButton></Tooltip>
+        <Tooltip title="List"><IconButton size="small" onClick={() => setView("list")} aria-label="List view"><ViewListRoundedIcon fontSize="small" /></IconButton></Tooltip>
+      </Stack>
+
+      {view === "grid" ? <ScreenshotGrid rows={visibleRows} /> : <ScreenshotList rows={visibleRows} />}
     </Box>
   );
 }
@@ -592,6 +1094,8 @@ export default function UserDetail({ selfMode = false }) {
   const [shotsPage, setShotsPage] = useState(1);
   const [logsHasMore, setLogsHasMore] = useState(false);
   const [shotsHasMore, setShotsHasMore] = useState(false);
+  const [ensuringLogsAll, setEnsuringLogsAll] = useState(false);
+  const [ensuringShotsAll, setEnsuringShotsAll] = useState(false);
 
   const params = useMemo(() => ({ from: applied.from, to: applied.to }), [applied]);
 
@@ -711,7 +1215,7 @@ export default function UserDetail({ selfMode = false }) {
   const contentLoading = (tab === 0 && logsLoading) || (tab === 1 && shotsLoading);
 
   async function loadMoreLogs() {
-    if (!user || logsLoading || !logsHasMore) return;
+    if (!user || logsLoading || ensuringLogsAll || !logsHasMore) return;
     const routeKey = routeEmailKey;
     const userKey = user?.company_username_norm || user?.company_username || routeKey;
     const uid = extensionUserId(user);
@@ -742,7 +1246,7 @@ export default function UserDetail({ selfMode = false }) {
   }
 
   async function loadMoreShots() {
-    if (!user || shotsLoading || !shotsHasMore) return;
+    if (!user || shotsLoading || ensuringShotsAll || !shotsHasMore) return;
     const routeKey = routeEmailKey;
     const userKey = user?.company_username_norm || user?.company_username || routeKey;
     const uid = extensionUserId(user);
@@ -774,6 +1278,72 @@ export default function UserDetail({ selfMode = false }) {
       setError(e?.message || "Failed to load more screenshots.");
     } finally {
       setShotsLoading(false);
+    }
+  }
+
+  async function ensureAllLogsLoaded() {
+    if (!user || logsLoading || ensuringLogsAll || !logsHasMore) return;
+    const routeKey = routeEmailKey;
+    const userKey = user?.company_username_norm || user?.company_username || routeKey;
+    const uid = extensionUserId(user);
+    const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+
+    setEnsuringLogsAll(true);
+    setError("");
+    try {
+      let page = logsPage;
+      let items = [...(logs.items || [])];
+      let total = logs.total || items.length;
+      while (items.length < total) {
+        const nextPage = page + 1;
+        const res = await getLogs({ ...params, ...userScopeParams, page: nextPage, limit: LOGS_PAGE_SIZE });
+        const norm = normalizeListResponse(res);
+        const chunk = norm.items || [];
+        if (chunk.length === 0) break;
+        items = [...items, ...chunk];
+        total = norm.total ?? total;
+        page = nextPage;
+      }
+      setLogs({ items, total });
+      setLogsPage(page);
+      setLogsHasMore(items.length < total);
+    } catch (e) {
+      setError(e?.message || "Failed to load all logs for filtering.");
+    } finally {
+      setEnsuringLogsAll(false);
+    }
+  }
+
+  async function ensureAllShotsLoaded() {
+    if (!user || shotsLoading || ensuringShotsAll || !shotsHasMore) return;
+    const routeKey = routeEmailKey;
+    const userKey = user?.company_username_norm || user?.company_username || routeKey;
+    const uid = extensionUserId(user);
+    const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+
+    setEnsuringShotsAll(true);
+    setError("");
+    try {
+      let page = shotsPage;
+      let items = [...(shots.items || [])];
+      let total = shots.total || items.length;
+      while (items.length < total) {
+        const nextPage = page + 1;
+        const res = await getScreenshots({ ...params, ...userScopeParams, page: nextPage, limit: SHOTS_PAGE_SIZE });
+        const norm = normalizeListResponse(res);
+        const chunk = norm.items || [];
+        if (chunk.length === 0) break;
+        items = [...items, ...chunk];
+        total = norm.total ?? total;
+        page = nextPage;
+      }
+      setShots({ items, total });
+      setShotsPage(page);
+      setShotsHasMore(items.length < total);
+    } catch (e) {
+      setError(e?.message || "Failed to load all screenshots for filtering.");
+    } finally {
+      setEnsuringShotsAll(false);
     }
   }
 
@@ -869,7 +1439,13 @@ export default function UserDetail({ selfMode = false }) {
         </Box>
       ) : tab === 0 ? (
         <Paper className="glass" elevation={0} sx={{ p: 2 }}>
-          <LogsTable rows={logs?.items || []} />
+          <LogsTable
+            rows={logs?.items || []}
+            totalRows={logs?.total || logs?.items?.length || 0}
+            hasMore={logsHasMore}
+            onEnsureAllRows={ensureAllLogsLoaded}
+            ensuringAllRows={ensuringLogsAll}
+          />
 
           {logsHasMore ? (
             <Box sx={{ display: "flex", justifyContent: "center", mt: 2 }}>
@@ -881,7 +1457,13 @@ export default function UserDetail({ selfMode = false }) {
         </Paper>
       ) : (
         <Paper className="glass" elevation={0} sx={{ p: 2 }}>
-          <ScreenshotsSection rows={shots?.items || []} />
+          <ScreenshotsSection
+            rows={shots?.items || []}
+            totalRows={shots?.total || shots?.items?.length || 0}
+            hasMore={shotsHasMore}
+            onEnsureAllRows={ensureAllShotsLoaded}
+            ensuringAllRows={ensuringShotsAll}
+          />
 
           {shotsHasMore ? (
             <Box sx={{ display: "flex", justifyContent: "center", mt: 2 }}>
