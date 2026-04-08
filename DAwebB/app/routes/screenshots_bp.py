@@ -5,8 +5,8 @@ from app.auth_jwt import require_auth
 from app.azure_blob import azure_credentials_configured, build_read_sas_url, resolve_blob_location
 from app.config import COL_SCREENSHOTS
 from app.db import get_db
-from app.identity import resolve_telemetry_user_id
-from app.rbac import can_access_user_mac_id, load_user_by_id
+from app.identity import resolve_telemetry_user_ids
+from app.rbac import can_access_screenshot_tracker, can_access_telemetry_targets, load_user_by_id
 from app.serializers import screenshot_row
 from app.time_range import range_iso_strings
 
@@ -23,6 +23,8 @@ _SHOT_FIELDS = {
     "window_title": 1,
     "application_tab": 1,
     "operation": 1,
+    "browser_name": 1,
+    "client_os": 1,
     "file_path": 1,
     "screenshot_url": 1,
     "created_at": 1,
@@ -66,9 +68,10 @@ def list_screenshots():
         return jsonify({"ok": False, "error": f"Invalid date range: {e}"}), 400
 
     db = get_db()
-    target_uid = resolve_telemetry_user_id(db, dict(request.args))
+    args = dict(request.args)
+    target_ids, scope_email = resolve_telemetry_user_ids(db, args)
 
-    if not target_uid:
+    if not target_ids:
         return jsonify(
             {
                 "ok": False,
@@ -76,7 +79,7 @@ def list_screenshots():
             }
         ), 400
 
-    if not can_access_user_mac_id(actor, target_uid):
+    if not can_access_telemetry_targets(actor, target_ids, scope_email):
         return jsonify({"ok": False, "error": "Forbidden"}), 403
 
     try:
@@ -88,12 +91,13 @@ def list_screenshots():
     except ValueError:
         limit = 50
 
-    filt: dict = {
-        "$and": [
-            {"$or": [{"user_mac_id": target_uid}, {"user_id": target_uid}]},
-            {"ts": {"$gte": start_iso, "$lte": end_iso}},
-        ]
-    }
+    if len(target_ids) == 1:
+        tid = target_ids[0]
+        uid_clause = {"$or": [{"user_mac_id": tid}, {"user_id": tid}]}
+    else:
+        uid_clause = {"$or": [{"user_id": {"$in": target_ids}}, {"user_mac_id": {"$in": target_ids}}]}
+
+    filt: dict = {"$and": [uid_clause, {"ts": {"$gte": start_iso, "$lte": end_iso}}]}
 
     col = db[COL_SCREENSHOTS]
     total = col.count_documents(filt)
@@ -105,7 +109,13 @@ def list_screenshots():
     return jsonify(
         {
             "ok": True,
-            "data": {"items": items, "total": total, "page": page, "limit": limit},
+            "data": {
+                "items": items,
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "merged_tracker_count": len(target_ids),
+            },
         }
     )
 
@@ -132,7 +142,7 @@ def get_screenshot_sas_url(shot_id: str):
         return jsonify({"ok": False, "error": "Screenshot not found"}), 404
 
     target_uid = str(doc.get("user_mac_id") or doc.get("user_id") or "")
-    if not can_access_user_mac_id(actor, target_uid):
+    if not can_access_screenshot_tracker(actor, target_uid):
         return jsonify({"ok": False, "error": "Forbidden"}), 403
 
     loc = resolve_blob_location(doc)

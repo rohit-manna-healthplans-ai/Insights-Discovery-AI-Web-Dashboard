@@ -72,13 +72,17 @@ function formatNumber(n) {
 
 function normalizeListResponse(res) {
   // supports:
-  // - { items, total, page, limit }
+  // - { items, total, page, limit, merged_tracker_count }
   // - { data: { items, total } }
   // - { data: itemsArray }
   // - itemsArray
   if (!res) return { items: [], total: 0 };
   if (Array.isArray(res)) return { items: res, total: res.length };
-  if (Array.isArray(res.items)) return { items: res.items, total: res.total ?? res.items.length };
+  if (Array.isArray(res.items)) {
+    const out = { items: res.items, total: res.total ?? res.items.length };
+    if (res.merged_tracker_count != null) out.merged_tracker_count = res.merged_tracker_count;
+    return out;
+  }
   if (res.data) {
     if (Array.isArray(res.data)) return { items: res.data, total: res.data.length };
     if (Array.isArray(res.data.items)) return { items: res.data.items, total: res.data.total ?? res.data.items.length };
@@ -90,6 +94,55 @@ function safeText(v) {
   if (v === null || v === undefined) return "—";
   const s = String(v);
   return s.trim() ? s : "—";
+}
+
+/** Raw capture string from API (`main_screen|1920x1080`). */
+function captureScreenRaw(r) {
+  const v = r?.capture_screen ?? r?.captureScreen;
+  if (v === null || v === undefined) return "";
+  return String(v).trim();
+}
+
+/** Split pipe form into screen label + human-readable resolution (`1920 × 1080`). */
+function parseCaptureScreen(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return { screen: "", resolution: "" };
+  const pipe = s.indexOf("|");
+  if (pipe === -1) return { screen: s, resolution: "" };
+  const screen = s.slice(0, pipe).trim();
+  const rest = s.slice(pipe + 1).trim();
+  const dim = rest.match(/^(\d+)\s*[xX×]\s*(\d+)$/);
+  const resolution = dim ? `${dim[1]} × ${dim[2]}` : rest;
+  return { screen, resolution };
+}
+
+function CaptureDisplay({ rowOrRaw }) {
+  const raw = typeof rowOrRaw === "string" ? rowOrRaw : captureScreenRaw(rowOrRaw);
+  const { screen, resolution } = parseCaptureScreen(raw);
+  if (!screen && !resolution) {
+    return (
+      <Typography variant="caption" className="muted">
+        —
+      </Typography>
+    );
+  }
+  return (
+    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ py: 0.25 }}>
+      {screen ? (
+        <Chip
+          size="small"
+          label={screen}
+          variant="outlined"
+          sx={{ fontWeight: 700, height: 22, fontSize: 11, maxWidth: "100%" }}
+        />
+      ) : null}
+      {resolution ? (
+        <Typography component="span" variant="caption" sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
+          {resolution}
+        </Typography>
+      ) : null}
+    </Stack>
+  );
 }
 
 function fmtDate(ts) {
@@ -191,18 +244,20 @@ async function openScreenshotSas(sid) {
 }
 
 function downloadLogsCSV(rows) {
-  const header = ["Date", "Time", "application", "window_title", "category", "operation", "details", "screenshot_id"];
+  const header = ["Date", "Time", "browser", "tab_page", "page_url", "category", "operation", "summary", "capture_screen", "screenshot_id"];
   const lines = [
     header.join(","),
     ...rows.map((r) =>
       [
         fmtDate(r.ts),
         fmtTime(r.ts),
-        safeText(r.application),
-        safeText(r.window_title),
+        logBrowserLabel(r),
+        logTabLabel(r),
+        safeText(r.page_url),
         safeText(r.category),
         safeText(r.operation),
-        safeText(r.details || r.detail),
+        safeText(r.details_summary || r.details || r.detail),
+        captureScreenRaw(r),
         safeText(logScreenshotId(r) || ""),
       ]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`)
@@ -216,6 +271,25 @@ function downloadLogsCSV(rows) {
   a.download = `logs_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Same work email across Chrome / Edge / Safari → backend merges tracker IDs. */
+function buildTelemetryScopeParams(userKey, uid) {
+  const key = String(userKey || "").trim();
+  if (key.includes("@")) {
+    return { company_username: key };
+  }
+  if (uid) return { user_id: uid };
+  return { company_username: key };
+}
+
+function logBrowserLabel(r) {
+  return safeText(r?.browser_name || r?.application);
+}
+
+function logTabLabel(r) {
+  const t = r?.page_title || r?.window_title || r?.application_tab;
+  return safeText(t);
 }
 
 const logCellWrap = {
@@ -336,11 +410,13 @@ function LogsTable({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows,
       const blob = [
         fmtDate(r.ts),
         fmtTime(r.ts),
-        safeText(r.application),
-        safeText(r.window_title),
+        logBrowserLabel(r),
+        logTabLabel(r),
+        safeText(r.page_url),
         safeText(r.category),
         safeText(r.operation),
-        safeText(r.details || r.detail),
+        safeText(r.details_summary || r.details || r.detail),
+        captureScreenRaw(r),
         safeText(sid || ""),
       ]
         .join(" ")
@@ -357,11 +433,16 @@ function LogsTable({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows,
       const map = {
         date: fmtDate(a.ts).localeCompare(fmtDate(b.ts)),
         time: fmtTime(a.ts).localeCompare(fmtTime(b.ts)),
+        browser: logBrowserLabel(a).localeCompare(logBrowserLabel(b)),
+        tab_page: logTabLabel(a).localeCompare(logTabLabel(b)),
         application: safeText(a.application).localeCompare(safeText(b.application)),
         window_title: safeText(a.window_title).localeCompare(safeText(b.window_title)),
         category: safeText(a.category).localeCompare(safeText(b.category)),
         operation: safeText(a.operation).localeCompare(safeText(b.operation)),
-        details: safeText(a.details || a.detail).localeCompare(safeText(b.details || b.detail)),
+        details: safeText(a.details_summary || a.details || a.detail).localeCompare(
+          safeText(b.details_summary || b.details || b.detail)
+        ),
+        capture_screen: captureScreenRaw(a).localeCompare(captureScreenRaw(b)),
         screenshot: sidA - sidB,
         ts: String(a.ts || "").localeCompare(String(b.ts || "")),
       };
@@ -448,7 +529,7 @@ function LogsTable({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows,
         <TextField
           size="small"
           label="Search"
-          placeholder="App, title, details, screenshot id..."
+          placeholder="Browser, tab, URL, category, capture, details…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           sx={{ minWidth: { xs: "100%", sm: 280 }, flex: 1 }}
@@ -561,7 +642,7 @@ function LogsTable({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows,
       </Dialog>
 
       <Typography variant="caption" className="muted" sx={{ display: "block", mb: 1 }}>
-        Scroll horizontally if needed — full text is shown (no hidden ellipsis).
+        Browser and tab come from the extension. Hover Summary for full JSON details.
       </Typography>
 
       <TableContainer
@@ -597,46 +678,61 @@ function LogsTable({ rows = [], totalRows = 0, hasMore = false, onEnsureAllRows,
           }}
         >
           <colgroup>
-            <col style={{ width: 108 }} />
+            <col style={{ width: 100 }} />
+            <col style={{ width: 82 }} />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 220 }} />
+            <col style={{ width: 110 }} />
+            <col style={{ width: 110 }} />
+            <col style={{ width: 160 }} />
+            <col style={{ width: "auto", minWidth: 240 }} />
             <col style={{ width: 88 }} />
-            <col style={{ width: 150 }} />
-            <col style={{ width: 260 }} />
-            <col style={{ width: 120 }} />
-            <col style={{ width: 120 }} />
-            <col style={{ width: "auto", minWidth: 280 }} />
-            <col style={{ width: 96 }} />
           </colgroup>
           <TableHead>
             <TableRow>
               <SortHead id="date" label="Date" />
               <SortHead id="time" label="Time" />
-              <SortHead id="application" label="Application" />
-              <SortHead id="window_title" label="Window title" />
+              <SortHead id="browser" label="Browser" />
+              <SortHead id="tab_page" label="Tab / page" />
               <SortHead id="category" label="Category" />
               <SortHead id="operation" label="Operation" />
-              <SortHead id="details" label="Details" />
-              <SortHead id="screenshot" label="Screenshot" align="center" />
+              <SortHead id="capture_screen" label="Capture" />
+              <SortHead id="details" label="Summary" />
+              <SortHead id="screenshot" label="Shot" align="center" />
             </TableRow>
           </TableHead>
           <TableBody>
             {visibleRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={9}>
                   <Typography color="text.secondary">No rows match current filters.</Typography>
                 </TableCell>
               </TableRow>
             ) : (
               visibleRows.map((r, idx) => {
                 const sid = logScreenshotId(r);
+                const sum = String(r.details_summary || r.details || r.detail || "").trim();
+                const sumShort = sum.length > 180 ? `${sum.slice(0, 177)}…` : sum;
                 return (
                   <TableRow key={`${r.ts || ""}_${idx}`} hover>
                     <TableCell sx={{ whiteSpace: "nowrap" }}>{fmtDate(r.ts)}</TableCell>
                     <TableCell sx={{ whiteSpace: "nowrap" }}>{fmtTime(r.ts)}</TableCell>
-                    <TableCell>{safeText(r.application)}</TableCell>
-                    <TableCell>{safeText(r.window_title)}</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }}>{logBrowserLabel(r)}</TableCell>
+                    <TableCell>
+                      <Tooltip title={safeText(r.page_url || r.application_tab || "")}>
+                        <span>{logTabLabel(r)}</span>
+                      </Tooltip>
+                    </TableCell>
                     <TableCell>{safeText(r.category)}</TableCell>
                     <TableCell>{safeText(r.operation)}</TableCell>
-                    <TableCell>{safeText(r.details || r.detail)}</TableCell>
+                    <TableCell>
+                      <CaptureDisplay rowOrRaw={r} />
+                    </TableCell>
+                    <TableCell>
+                      <Tooltip title={safeText(r.details || r.detail)}>
+                        <span>{sumShort || "—"}</span>
+                      </Tooltip>
+                    </TableCell>
                     <TableCell align="center" sx={{ whiteSpace: "nowrap" }}>
                       {sid ? (
                         <Tooltip title="View screenshot (opens new tab)">
@@ -736,9 +832,17 @@ function ScreenshotCard({ row }) {
         {safeText(row.window_title)}
       </Typography>
       <Typography sx={{ fontSize: 12, color: "text.secondary", wordBreak: "break-word" }} title={safeText(row.application)}>
+        {row.browser_name ? `${safeText(row.browser_name)} · ` : ""}
         {safeText(row.application)}
         {row.operation ? ` • ${safeText(row.operation)}` : ""}
       </Typography>
+
+      <Box sx={{ mt: 1 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.35, fontWeight: 800, fontSize: 10, letterSpacing: 0.4, textTransform: "uppercase" }}>
+          Capture
+        </Typography>
+        <CaptureDisplay rowOrRaw={row} />
+      </Box>
 
       <Stack direction="row" spacing={1} sx={{ mt: 1 }} alignItems="center" justifyContent="flex-end">
         {sid ? (
@@ -804,7 +908,7 @@ function ScreenshotList({ rows = [] }) {
           stickyHeader
           size="small"
           sx={{
-            minWidth: 960,
+            minWidth: 1120,
             tableLayout: "fixed",
             "& .MuiTableCell-root": logCellWrap,
             "& .MuiTableCell-head": {
@@ -820,24 +924,28 @@ function ScreenshotList({ rows = [] }) {
         >
           <colgroup>
             <col style={{ width: 168 }} />
-            <col style={{ width: 160 }} />
-            <col style={{ width: 240 }} />
+            <col style={{ width: 120 }} />
             <col style={{ width: 140 }} />
-            <col style={{ width: "auto", minWidth: 260 }} />
+            <col style={{ width: 220 }} />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 168 }} />
+            <col style={{ width: "auto", minWidth: 240 }} />
           </colgroup>
           <TableHead>
             <TableRow>
               <TableCell>Time</TableCell>
-              <TableCell>Application</TableCell>
-              <TableCell>Window</TableCell>
+              <TableCell>Browser</TableCell>
+              <TableCell>Site (host)</TableCell>
+              <TableCell>Tab / page</TableCell>
               <TableCell>Operation</TableCell>
+              <TableCell>Capture</TableCell>
               <TableCell>Blob / view</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5}>
+                <TableCell colSpan={7}>
                   <Typography color="text.secondary">No screenshots for this range.</Typography>
                 </TableCell>
               </TableRow>
@@ -845,9 +953,13 @@ function ScreenshotList({ rows = [] }) {
               rows.map((r, idx) => (
                 <TableRow key={`${r.ts || ""}_${idx}`} hover>
                   <TableCell sx={{ whiteSpace: "nowrap" }}>{safeText(r.ts)}</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>{safeText(r.browser_name || "—")}</TableCell>
                   <TableCell>{safeText(r.application)}</TableCell>
-                  <TableCell>{safeText(r.window_title)}</TableCell>
+                  <TableCell>{safeText(r.window_title || r.application_tab)}</TableCell>
                   <TableCell>{safeText(r.operation || r.label)}</TableCell>
+                  <TableCell>
+                    <CaptureDisplay rowOrRaw={r} />
+                  </TableCell>
                   <TableCell sx={{ wordBreak: "break-all" }}>
                     <Stack spacing={0.75}>
                       <Typography variant="caption" sx={{ color: "var(--muted)", display: "block" }}>
@@ -947,7 +1059,9 @@ function ScreenshotsSection({ rows = [], totalRows = 0, hasMore = false, onEnsur
       if (!inDateRange(d, dateFrom, dateTo)) return false;
       if (!inTimeRange(t, normalizeTime24(timeFrom), normalizeTime24(timeTo))) return false;
       if (!q) return true;
-      const blob = [safeText(r.ts), app, safeText(r.window_title), op, safeText(r.screenshot_url), safeText(r.file_path), safeText(sid || "")].join(" ").toLowerCase();
+      const blob = [safeText(r.ts), app, safeText(r.window_title), op, captureScreenRaw(r), safeText(r.screenshot_url), safeText(r.file_path), safeText(sid || "")]
+        .join(" ")
+        .toLowerCase();
       return blob.includes(q);
     });
   }, [rows, search, appFilter, operationFilter, hasId, dateFrom, dateTo, timeFrom, timeTo]);
@@ -960,6 +1074,7 @@ function ScreenshotsSection({ rows = [], totalRows = 0, hasMore = false, onEnsur
         application: safeText(a.application).localeCompare(safeText(b.application)),
         window: safeText(a.window_title).localeCompare(safeText(b.window_title)),
         operation: safeText(a.operation || a.label).localeCompare(safeText(b.operation || b.label)),
+        capture_screen: captureScreenRaw(a).localeCompare(captureScreenRaw(b)),
         hasId: (screenshotLookupKey(a) ? 1 : 0) - (screenshotLookupKey(b) ? 1 : 0),
       };
       const cmp = map[sortBy] ?? map.ts;
@@ -987,7 +1102,7 @@ function ScreenshotsSection({ rows = [], totalRows = 0, hasMore = false, onEnsur
   return (
     <Box>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1.25 }} useFlexGap flexWrap="wrap">
-        <TextField size="small" label="Search screenshots" placeholder="Time, app, title, path, id..." value={search} onChange={(e) => setSearch(e.target.value)} sx={{ minWidth: { xs: "100%", sm: 280 }, flex: 1 }} />
+        <TextField size="small" label="Search screenshots" placeholder="Time, app, title, capture, path, id…" value={search} onChange={(e) => setSearch(e.target.value)} sx={{ minWidth: { xs: "100%", sm: 280 }, flex: 1 }} />
         <Button size="small" variant={activeFilterCount ? "contained" : "outlined"} startIcon={<FilterAltRoundedIcon />} onClick={() => setFilterOpen(true)} sx={{ fontWeight: 800, minWidth: { xs: "100%", sm: "auto" } }}>
           Filters {activeFilterCount ? `(${activeFilterCount})` : ""}
         </Button>
@@ -996,7 +1111,12 @@ function ScreenshotsSection({ rows = [], totalRows = 0, hasMore = false, onEnsur
         <Chip size="small" variant="outlined" label={`Rows: ${visibleRows.length}/${totalRows || rows.length}`} />
         {ensuringAllRows ? <Chip size="small" color="info" variant="outlined" label="Loading all rows for filters..." /> : null}
         <TextField size="small" select label="Sort by" value={sortBy} onChange={(e) => setSortBy(e.target.value)} sx={{ minWidth: 145 }}>
-          <MenuItem value="ts">Time</MenuItem><MenuItem value="application">Application</MenuItem><MenuItem value="window">Window</MenuItem><MenuItem value="operation">Operation</MenuItem><MenuItem value="hasId">Has id</MenuItem>
+          <MenuItem value="ts">Time</MenuItem>
+          <MenuItem value="application">Application</MenuItem>
+          <MenuItem value="window">Window</MenuItem>
+          <MenuItem value="operation">Operation</MenuItem>
+          <MenuItem value="capture_screen">Capture</MenuItem>
+          <MenuItem value="hasId">Has id</MenuItem>
         </TextField>
         <TextField size="small" select label="Direction" value={sortDir} onChange={(e) => setSortDir(e.target.value)} sx={{ minWidth: 130 }}>
           <MenuItem value="desc">Desc</MenuItem><MenuItem value="asc">Asc</MenuItem>
@@ -1086,6 +1206,7 @@ export default function UserDetail({ selfMode = false }) {
   const [user, setUser] = useState(null);
   const [logs, setLogs] = useState({ items: [], total: 0 });
   const [shots, setShots] = useState({ items: [], total: 0 });
+  const [mergedTrackerCount, setMergedTrackerCount] = useState(null);
 
   const LOGS_PAGE_SIZE = 100;
   const SHOTS_PAGE_SIZE = 50;
@@ -1165,7 +1286,7 @@ export default function UserDetail({ selfMode = false }) {
         setLogsPage(1);
         setShotsPage(1);
 
-        const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+        const userScopeParams = buildTelemetryScopeParams(userKey, uid);
 
         const [lRes, sRes] = await Promise.allSettled([
           getLogs({ ...params, ...userScopeParams, page: 1, limit: LOGS_PAGE_SIZE }),
@@ -1176,10 +1297,16 @@ export default function UserDetail({ selfMode = false }) {
 
         const logsNorm = lRes.status === "fulfilled" ? normalizeListResponse(lRes.value) : { items: [], total: 0 };
         setLogs(logsNorm);
-        setLogsHasMore((logsNorm.items?.length || 0) < (logsNorm.total || 0));
-
         const shotsNorm = sRes.status === "fulfilled" ? normalizeListResponse(sRes.value) : { items: [], total: 0 };
         setShots(shotsNorm);
+        const merged =
+          logsNorm.merged_tracker_count != null
+            ? logsNorm.merged_tracker_count
+            : shotsNorm.merged_tracker_count != null
+              ? shotsNorm.merged_tracker_count
+              : null;
+        setMergedTrackerCount(merged);
+        setLogsHasMore((logsNorm.items?.length || 0) < (logsNorm.total || 0));
         setShotsHasMore((shotsNorm.items?.length || 0) < (shotsNorm.total || 0));
 
         const errs = [lRes, sRes]
@@ -1189,6 +1316,7 @@ export default function UserDetail({ selfMode = false }) {
         if (errs.length) setError(errs[0]);
       } catch (e) {
         if (!mounted) return;
+        setMergedTrackerCount(null);
         setError(e?.message || "Failed to load user detail.");
         setUser(null);
         setLogs({ items: [], total: 0 });
@@ -1219,7 +1347,7 @@ export default function UserDetail({ selfMode = false }) {
     const routeKey = routeEmailKey;
     const userKey = user?.company_username_norm || user?.company_username || routeKey;
     const uid = extensionUserId(user);
-    const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+    const userScopeParams = buildTelemetryScopeParams(userKey, uid);
     const nextPage = logsPage + 1;
 
     setLogsLoading(true);
@@ -1232,6 +1360,8 @@ export default function UserDetail({ selfMode = false }) {
         const merged = [...(prev.items || []), ...(norm.items || [])];
         return { items: merged, total: norm.total ?? prev.total ?? merged.length };
       });
+
+      if (norm.merged_tracker_count != null) setMergedTrackerCount(norm.merged_tracker_count);
 
       const currentCount = (logs.items?.length || 0) + (norm.items?.length || 0);
       const total = norm.total ?? logs.total ?? currentCount;
@@ -1250,7 +1380,7 @@ export default function UserDetail({ selfMode = false }) {
     const routeKey = routeEmailKey;
     const userKey = user?.company_username_norm || user?.company_username || routeKey;
     const uid = extensionUserId(user);
-    const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+    const userScopeParams = buildTelemetryScopeParams(userKey, uid);
     const nextPage = shotsPage + 1;
 
     setShotsLoading(true);
@@ -1269,6 +1399,8 @@ export default function UserDetail({ selfMode = false }) {
         return { items: merged, total: norm.total ?? prev.total ?? merged.length };
       });
 
+      if (norm.merged_tracker_count != null) setMergedTrackerCount(norm.merged_tracker_count);
+
       const currentCount = (shots.items?.length || 0) + (norm.items?.length || 0);
       const total = norm.total ?? shots.total ?? currentCount;
 
@@ -1286,7 +1418,7 @@ export default function UserDetail({ selfMode = false }) {
     const routeKey = routeEmailKey;
     const userKey = user?.company_username_norm || user?.company_username || routeKey;
     const uid = extensionUserId(user);
-    const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+    const userScopeParams = buildTelemetryScopeParams(userKey, uid);
 
     setEnsuringLogsAll(true);
     setError("");
@@ -1319,7 +1451,7 @@ export default function UserDetail({ selfMode = false }) {
     const routeKey = routeEmailKey;
     const userKey = user?.company_username_norm || user?.company_username || routeKey;
     const uid = extensionUserId(user);
-    const userScopeParams = uid ? { user_id: uid } : { company_username: userKey };
+    const userScopeParams = buildTelemetryScopeParams(userKey, uid);
 
     setEnsuringShotsAll(true);
     setError("");
@@ -1420,10 +1552,15 @@ export default function UserDetail({ selfMode = false }) {
       </Paper>
 
       <Paper className="glass" elevation={0} sx={{ p: 1 }}>
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto">
-          <Tab label={`Logs (${formatNumber(logs?.total || logs?.items?.length || 0)})`} />
-          <Tab label={`Screenshots (${formatNumber(shots?.total || shots?.items?.length || 0)})`} />
-        </Tabs>
+        <Stack direction="row" alignItems="center" flexWrap="wrap" gap={1} sx={{ px: 0.5 }}>
+          <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ flex: 1, minWidth: 0 }}>
+            <Tab label={`Logs (${formatNumber(logs?.total || logs?.items?.length || 0)})`} />
+            <Tab label={`Screenshots (${formatNumber(shots?.total || shots?.items?.length || 0)})`} />
+          </Tabs>
+          {mergedTrackerCount != null && mergedTrackerCount > 1 ? (
+            <Chip size="small" color="info" variant="outlined" label={`${mergedTrackerCount} browsers · merged by email`} />
+          ) : null}
+        </Stack>
       </Paper>
 
       <Divider sx={{ my: 2, borderColor: "var(--border-1)" }} />

@@ -1,7 +1,36 @@
 """Strip secrets and normalize API shapes (aligned with discovery-ai-backend-main field names)."""
+import json
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 from bson import ObjectId
+
+
+def _parse_web_details(details: Any) -> Dict[str, Any]:
+    """Extract browser, url, title from discovery `details` JSON string (`{ \"web\": { ... } }`)."""
+    out: Dict[str, Any] = {}
+    if not details or not isinstance(details, str):
+        return out
+    try:
+        j = json.loads(details)
+    except Exception:
+        return out
+    web = j.get("web") if isinstance(j, dict) else None
+    if not isinstance(web, dict):
+        return out
+    meta = web.get("extensionMeta") if isinstance(web.get("extensionMeta"), dict) else {}
+    if meta.get("browserName"):
+        out["browser_name"] = str(meta.get("browserName"))[:80]
+    if meta.get("os"):
+        out["client_os"] = str(meta.get("os"))[:80]
+    if meta.get("platform"):
+        out["client_platform"] = str(meta.get("platform"))[:80]
+    if web.get("url"):
+        out["page_url"] = str(web.get("url"))[:2000]
+    title = web.get("title")
+    if title is not None:
+        out["page_title"] = str(title)[:500]
+    return out
 
 
 def _str_id(val: Any) -> str:
@@ -77,6 +106,31 @@ def log_row(doc: Dict[str, Any]) -> Dict[str, Any]:
     if not doc:
         return {}
     uid = doc.get("user_id") or doc.get("user_mac_id")
+    details = doc.get("details")
+    parsed = _parse_web_details(details)
+    app = doc.get("application") or ""
+    win = doc.get("window_title") or ""
+    tab = doc.get("application_tab") or ""
+    # Concise one-liner for UI: browser · page title · host
+    summary_parts = []
+    if parsed.get("browser_name"):
+        summary_parts.append(parsed["browser_name"])
+    pt = parsed.get("page_title") or ""
+    if pt:
+        summary_parts.append(pt[:120] + ("…" if len(pt) > 120 else ""))
+    elif win:
+        summary_parts.append(win[:120] + ("…" if len(str(win)) > 120 else ""))
+    if parsed.get("page_url"):
+        try:
+            host = urlparse(parsed["page_url"]).netloc or ""
+            if host:
+                summary_parts.append(host)
+        except Exception:
+            pass
+    elif app and app != "browser":
+        summary_parts.append(app)
+    summary = " · ".join(summary_parts) if summary_parts else (tab or "—")
+
     out = {
         "_id": str(doc.get("_id")) if doc.get("_id") is not None else None,
         "log_id": doc.get("log_id"),
@@ -88,13 +142,18 @@ def log_row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "category": doc.get("category"),
         "category_key": doc.get("category_key"),
         "event_type": doc.get("event_type"),
-        "details": doc.get("details"),
-        "application": doc.get("application"),
-        "window_title": doc.get("window_title"),
-        "application_tab": doc.get("application_tab"),
+        "details": details,
+        "details_summary": summary,
+        "application": app,
+        "window_title": win,
+        "application_tab": tab,
         "operation": doc.get("operation"),
         "screenshot_id": doc.get("screenshot_id"),
         "created_at": doc.get("created_at"),
+        "browser_name": parsed.get("browser_name"),
+        "client_os": parsed.get("client_os"),
+        "page_url": parsed.get("page_url"),
+        "page_title": parsed.get("page_title"),
     }
     return out
 
@@ -105,6 +164,12 @@ def screenshot_row(doc: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     op = doc.get("operation")
     uid = doc.get("user_id") or doc.get("user_mac_id")
+    app = doc.get("application") or ""
+    win = doc.get("window_title") or ""
+    tab = doc.get("application_tab") or ""
+    browser = (doc.get("browser_name") or "").strip()
+    cos = (doc.get("client_os") or "").strip()
+    summary = " · ".join([x for x in [browser or None, app, win[:80] if win else ""] if x]) or tab or "—"
     out = {
         "_id": str(doc.get("_id")) if doc.get("_id") is not None else None,
         "screenshot_id": doc.get("screenshot_id"),
@@ -113,9 +178,12 @@ def screenshot_row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "user_mac_id": uid,
         "pc_username": doc.get("pc_username"),
         "ts": doc.get("ts"),
-        "application": doc.get("application"),
-        "window_title": doc.get("window_title"),
-        "application_tab": doc.get("application_tab"),
+        "application": app,
+        "window_title": win,
+        "application_tab": tab,
+        "browser_name": browser or None,
+        "client_os": cos or None,
+        "details_summary": summary,
         "operation": op,
         "label": doc.get("label") or op,
         "file_path": doc.get("file_path"),
