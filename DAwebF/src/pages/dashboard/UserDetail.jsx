@@ -96,7 +96,7 @@ function safeText(v) {
   return s.trim() ? s : "—";
 }
 
-/** Raw capture string from API (`main_screen|1920x1080`). */
+/** Value from API: `capture_screen` (snake) or `captureScreen` (camel). */
 function captureScreenRaw(r) {
   const v = r?.capture_screen ?? r?.captureScreen;
   if (v === null || v === undefined) return "";

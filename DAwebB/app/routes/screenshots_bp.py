@@ -25,6 +25,7 @@ _SHOT_FIELDS = {
     "operation": 1,
     "browser_name": 1,
     "client_os": 1,
+    "capture_screen": 1,
     "file_path": 1,
     "screenshot_url": 1,
     "created_at": 1,
