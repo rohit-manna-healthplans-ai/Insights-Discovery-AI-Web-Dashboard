@@ -45,7 +45,7 @@ export default function Settings() {
           <>
             <Typography sx={{ fontWeight: 950, fontSize: 16 }}>Admin</Typography>
             <Typography className="muted" sx={{ mt: 0.5 }}>
-              Full access to all users, logs, and screenshots. User management from the Users page.
+              Full access to all users, activity logs, and screenshots. User management from the Users page.
             </Typography>
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
@@ -58,7 +58,7 @@ export default function Settings() {
           <>
             <Typography sx={{ fontWeight: 950, fontSize: 16 }}>Department manager</Typography>
             <Typography className="muted" sx={{ mt: 0.5 }}>
-              You can open only users in your department and view their logs and screenshots.
+              You can open only users in your department and view their activity logs and screenshots.
             </Typography>
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
@@ -71,11 +71,11 @@ export default function Settings() {
           <>
             <Typography sx={{ fontWeight: 950, fontSize: 16 }}>Your workspace</Typography>
             <Typography className="muted" sx={{ mt: 0.5 }}>
-              You can view only your own logs and screenshots from the sidebar (My logs & screenshots).
+              You can view only your own activity logs and screenshots from the sidebar (My activity logs & screenshots).
             </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1.5 }}>
               <Button variant="contained" onClick={() => nav("/dashboard/my-activity")} sx={{ fontWeight: 950 }}>
-                Open my logs & screenshots
+                Open my activity logs & screenshots
               </Button>
             </Stack>
           </>

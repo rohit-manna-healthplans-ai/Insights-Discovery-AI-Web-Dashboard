@@ -18,7 +18,7 @@ dashboard/
 - Python 3.10+ (recommended 3.11/3.12)
 - Node.js 18+
 - npm
-- MongoDB connection string
+- MongoDB or Azure Cosmos DB for MongoDB connection string (`AZURE_COSMOS_MONGO_URI` or `MONGO_URI`; see `DAwebB/.env.example`)
 
 ## 1) Run Backend (`DAwebB`)
 
@@ -35,9 +35,8 @@ Backend runs on: `http://127.0.0.1:5000`
 
 Required environment values in `DAwebB/.env`:
 
-- `MONGO_URI`
 - `JWT_SECRET`
-- `MONGO_DB_NAME` (or `MONGO_DBNAME`)
+- `AZURE_COSMOS_MONGO_URI` and/or `MONGO_URI`, plus `MONGO_DB_NAME` (or `MONGO_DBNAME`)
 
 ## 2) Run Frontend (`DAwebF`)
 

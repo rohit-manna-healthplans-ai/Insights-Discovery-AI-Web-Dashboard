@@ -21,7 +21,7 @@ import { useThemeMode } from "../providers/ThemeProvider";
 function titleFromPath(pathname) {
   const p = pathname.toLowerCase();
   if (p.includes("/profile")) return "Profile";
-  if (p.includes("/my-activity")) return "My logs & screenshots";
+  if (p.includes("/my-activity")) return "My activity logs & screenshots";
   if (p.includes("/users")) return "Users";
   if (p.includes("/settings")) return "Settings";
   return "Dashboard";

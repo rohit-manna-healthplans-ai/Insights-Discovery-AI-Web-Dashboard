@@ -2,7 +2,12 @@ from flask import Blueprint, jsonify, request
 from bson import ObjectId
 
 from app.auth_jwt import require_auth
-from app.azure_blob import azure_credentials_configured, build_read_sas_url, resolve_blob_location
+from app.azure_blob import (
+    azure_credentials_configured,
+    build_read_sas_url,
+    resolve_blob_location,
+    sign_read_sas_https_blob_url,
+)
 from app.config import COL_SCREENSHOTS
 from app.db import get_db
 from app.identity import resolve_telemetry_user_ids
@@ -29,6 +34,7 @@ _SHOT_FIELDS = {
     "file_path": 1,
     "screenshot_url": 1,
     "created_at": 1,
+    "client_delivery_id": 1,
 }
 
 
@@ -129,14 +135,6 @@ def get_screenshot_sas_url(shot_id: str):
     if not actor:
         return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
-    if not azure_credentials_configured():
-        return jsonify(
-            {
-                "ok": False,
-                "error": "Azure Blob Storage is not configured (set AZURE_STORAGE_ACCOUNT_NAME and AZURE_STORAGE_ACCOUNT_KEY).",
-            }
-        ), 503
-
     db = get_db()
     doc = _find_screenshot(db, shot_id)
     if not doc:
@@ -146,34 +144,74 @@ def get_screenshot_sas_url(shot_id: str):
     if not can_access_screenshot_tracker(actor, target_uid):
         return jsonify({"ok": False, "error": "Forbidden"}), 403
 
-    loc = resolve_blob_location(doc)
-    if not loc:
+    if azure_credentials_configured():
+        loc = resolve_blob_location(doc)
+        url = None
+        expiry_mins = None
+        if loc:
+            account_name, container_name, blob_name = loc
+            try:
+                url, expiry_mins = build_read_sas_url(
+                    account_name=account_name,
+                    container_name=container_name,
+                    blob_name=blob_name,
+                )
+            except RuntimeError as e:
+                return jsonify({"ok": False, "error": str(e)}), 503
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"SAS generation failed: {e!s}"}), 500
+        else:
+            # Fallback: full HTTPS blob URL on the document (same pattern as generate_blob_sas scripts).
+            su = (doc.get("screenshot_url") or "").strip()
+            if su.startswith("https://"):
+                try:
+                    url, expiry_mins = sign_read_sas_https_blob_url(su)
+                except (ValueError, RuntimeError):
+                    url = None
+            if not url:
+                return jsonify(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Cannot resolve blob for SAS. Set screenshot_url to "
+                            "https://<account>.blob.core.windows.net/<container>/<path> matching "
+                            "AZURE_STORAGE_ACCOUNT_NAME, or set file_path + AZURE_SCREENSHOT_CONTAINER."
+                        ),
+                    }
+                ), 400
+
         return jsonify(
             {
-                "ok": False,
-                "error": "Cannot resolve blob (set screenshot_url or file_path; AZURE_STORAGE_ACCOUNT_NAME must match the account in the URL).",
+                "ok": True,
+                "data": {
+                    "url": url,
+                    "sas_url": url,
+                    "expires_in_minutes": expiry_mins,
+                },
             }
-        ), 400
-
-    account_name, container_name, blob_name = loc
-    try:
-        url, expiry_mins = build_read_sas_url(
-            account_name=account_name,
-            container_name=container_name,
-            blob_name=blob_name,
         )
-    except RuntimeError as e:
-        return jsonify({"ok": False, "error": str(e)}), 503
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"SAS generation failed: {e!s}"}), 500
+
+    # No account key: use stored HTTPS URL directly (public blob/CDN). Private blobs still need SAS — set Azure env.
+    direct = (doc.get("screenshot_url") or "").strip()
+    if direct.startswith("https://"):
+        return jsonify(
+            {
+                "ok": True,
+                "data": {
+                    "url": direct,
+                    "sas_url": direct,
+                    "expires_in_minutes": None,
+                    "direct_url": True,
+                },
+            }
+        )
 
     return jsonify(
         {
-            "ok": True,
-            "data": {
-                "url": url,
-                "sas_url": url,
-                "expires_in_minutes": expiry_mins,
-            },
+            "ok": False,
+            "error": (
+                "Azure Blob Storage is not configured (set AZURE_STORAGE_ACCOUNT_NAME and "
+                "AZURE_STORAGE_ACCOUNT_KEY), and this screenshot has no HTTPS screenshot_url to open directly."
+            ),
         }
-    )
+    ), 503

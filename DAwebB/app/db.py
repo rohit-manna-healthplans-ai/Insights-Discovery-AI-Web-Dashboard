@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
+from typing import Any
 
 import bcrypt
 from pymongo import MongoClient, ASCENDING, DESCENDING
@@ -12,6 +13,8 @@ from app.config import (
     COL_DEPARTMENTS,
     COL_LOGS,
     COL_SCREENSHOTS,
+    COL_VALIDATION_LOGS,
+    COL_USER_HEARTBEATS,
     BOOTSTRAP_ADMIN_EMAIL,
     BOOTSTRAP_ADMIN_PASSWORD,
     BOOTSTRAP_ADMIN_NAME,
@@ -31,16 +34,32 @@ def _safe_index(collection, keys, **kwargs):
         raise
 
 
+def _is_azure_cosmos_mongo_uri(uri: str) -> bool:
+    """Host patterns for Azure Cosmos DB for MongoDB (same idea as extension-repo export script)."""
+    u = (uri or "").lower()
+    return (
+        "mongocluster.cosmos.azure.com" in u
+        or "cosmos.azure.com" in u
+        or ".mongo.cosmos.azure.com" in u
+    )
+
+
 @lru_cache(maxsize=1)
 def get_client() -> MongoClient:
-    # Atlas / remote clusters: slightly higher timeouts reduce flaky "connection closed" on cold start.
-    return MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=20000,
-        connectTimeoutMS=10000,
-        socketTimeoutMS=45000,
-        retryWrites=True,
-    )
+    uri = MONGO_URI
+    base: dict[str, Any] = {
+        "serverSelectionTimeoutMS": 45_000,
+        "connectTimeoutMS": 10_000,
+        "socketTimeoutMS": 45_000,
+        "maxPoolSize": 50,
+    }
+    if _is_azure_cosmos_mongo_uri(uri):
+        base["authMechanism"] = "SCRAM-SHA-256"
+        if "retrywrites=true" not in uri.lower().replace(" ", ""):
+            base["retryWrites"] = False
+    else:
+        base["retryWrites"] = True
+    return MongoClient(uri, **base)
 
 
 def get_db():
@@ -80,6 +99,13 @@ def ensure_indexes() -> None:
     _safe_index(db[COL_SCREENSHOTS], [("screenshot_id", ASCENDING)], unique=True, sparse=True)
     _safe_index(db[COL_SCREENSHOTS], [("application", ASCENDING), ("ts", DESCENDING)])
     _safe_index(db[COL_SCREENSHOTS], [("operation", ASCENDING), ("ts", DESCENDING)])
+    _safe_index(db[COL_SCREENSHOTS], [("client_delivery_id", ASCENDING)], sparse=True)
+
+    # validation_logs / user_heartbeats (discovery-ai-backend-main)
+    _safe_index(db[COL_VALIDATION_LOGS], [("user_id", ASCENDING), ("ts", DESCENDING)])
+    _safe_index(db[COL_VALIDATION_LOGS], [("client_delivery_id", ASCENDING), ("ts", ASCENDING)])
+    _safe_index(db[COL_USER_HEARTBEATS], [("user_id", ASCENDING)], unique=True)
+    _safe_index(db[COL_USER_HEARTBEATS], [("last_heartbeat_at", DESCENDING)])
 
 
 def ensure_bootstrap_admin() -> None:
@@ -106,7 +132,6 @@ def ensure_bootstrap_admin() -> None:
                     "full_name": existing.get("full_name") or BOOTSTRAP_ADMIN_NAME,
                     "role_key": "C_SUITE",
                     "department": None,
-                    "is_active": True,
                     "approval_status": "APPROVED",
                     "approved_at": existing.get("approved_at") or now,
                     "updated_at": now,
@@ -136,7 +161,6 @@ def ensure_bootstrap_admin() -> None:
             "created_at": now,
             "updated_at": now,
             "password_hash": pw_hash,
-            "is_active": True,
             "approval_status": "APPROVED",
             "approved_by": "SYSTEM_BOOTSTRAP",
             "approved_at": now,

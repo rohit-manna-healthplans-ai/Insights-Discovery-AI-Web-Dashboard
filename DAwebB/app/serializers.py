@@ -55,6 +55,7 @@ def user_public(doc: Dict[str, Any]) -> Dict[str, Any]:
         out["tracker_user_id"] = sid
         # Legacy alias only — same value as discovery's extension id for this account
         out["user_mac_id"] = sid
+    out.pop("is_active", None)
     return out
 
 
@@ -79,7 +80,6 @@ def plugin_user_public(doc: Dict[str, Any]) -> Dict[str, Any]:
         "full_name": doc.get("name") or doc.get("username") or "",
         "role_key": "DEPARTMENT_MEMBER",
         "department": None,
-        "is_active": doc.get("isActive", True),
         "approval_status": "APPROVED",
         "source": "plugin_users",
         "last_seen_at": doc.get("last_seen_at"),
@@ -150,6 +150,7 @@ def log_row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "operation": doc.get("operation"),
         "capture_screen": doc.get("capture_screen"),
         "screenshot_id": doc.get("screenshot_id"),
+        "client_delivery_id": doc.get("client_delivery_id") or None,
         "created_at": doc.get("created_at"),
         "browser_name": parsed.get("browser_name"),
         "client_os": parsed.get("client_os"),
@@ -191,5 +192,6 @@ def screenshot_row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "file_path": doc.get("file_path"),
         "screenshot_url": doc.get("screenshot_url"),
         "created_at": doc.get("created_at"),
+        "client_delivery_id": doc.get("client_delivery_id") or None,
     }
     return out

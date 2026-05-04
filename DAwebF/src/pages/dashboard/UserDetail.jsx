@@ -29,6 +29,10 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Alert,
 } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
@@ -44,11 +48,11 @@ import PageHeader from "../../components/ui/PageHeader";
 import { useUserSelection } from "../../app/providers/UserSelectionProvider";
 import { useAuth } from "../../app/providers/AuthProvider";
 import { getUserApi } from "../../features/users/users.api";
-import { getLogs, getScreenshots, getScreenshotSasUrl } from "../../services/data.api";
+import { getLogs, getScreenshots, getScreenshotSasUrl, getUserHeartbeat } from "../../services/data.api";
 import { extensionUserId } from "../../utils/userIdentity";
 
 /**
- * UserDetail — logs + screenshots.
+ * UserDetail — activity logs, screenshots, extension heartbeat.
  * selfMode: department member viewing only their own data.
  */
 
@@ -844,7 +848,7 @@ function ScreenshotCard({ row }) {
         <CaptureDisplay rowOrRaw={row} />
       </Box>
 
-      <Stack direction="row" spacing={1} sx={{ mt: 1 }} alignItems="center" justifyContent="flex-end">
+      <Stack direction="row" spacing={1} sx={{ mt: 1 }} alignItems="center" justifyContent="flex-end" flexWrap="wrap" useFlexGap>
         {sid ? (
           <Button
             size="small"
@@ -880,7 +884,9 @@ function ScreenshotGrid({ rows = [] }) {
           <Typography color="text.secondary">No screenshots for this range.</Typography>
         </Paper>
       ) : (
-        rows.map((r, idx) => <ScreenshotCard key={`${screenshotLookupKey(r) || r.ts || ""}_${idx}`} row={r} />)
+        rows.map((r, idx) => (
+          <ScreenshotCard key={`${screenshotLookupKey(r) || r.ts || ""}_${idx}`} row={r} />
+        ))
       )}
     </Box>
   );
@@ -1183,6 +1189,7 @@ function ScreenshotsSection({ rows = [], totalRows = 0, hasMore = false, onEnsur
 
 const ROLE_DEPT_HEAD = "DEPARTMENT_HEAD";
 
+
 export default function UserDetail({ selfMode = false }) {
   const nav = useNavigate();
   const { company_username } = useParams();
@@ -1218,6 +1225,8 @@ export default function UserDetail({ selfMode = false }) {
   const [ensuringLogsAll, setEnsuringLogsAll] = useState(false);
   const [ensuringShotsAll, setEnsuringShotsAll] = useState(false);
 
+  const [heartbeat, setHeartbeat] = useState(null);
+
   const params = useMemo(() => ({ from: applied.from, to: applied.to }), [applied]);
 
   const lastSelectedKeyRef = useRef("");
@@ -1235,6 +1244,7 @@ export default function UserDetail({ selfMode = false }) {
     async function run() {
       setError("");
       setUserLoading(true);
+      setHeartbeat(null);
 
       try {
         if (selfMode && !routeEmailKey) {
@@ -1251,6 +1261,7 @@ export default function UserDetail({ selfMode = false }) {
             setUser(null);
             setLogs({ items: [], total: 0 });
             setShots({ items: [], total: 0 });
+            setHeartbeat(null);
             if (mounted) {
               setUserLoading(false);
               setLogsLoading(false);
@@ -1288,9 +1299,10 @@ export default function UserDetail({ selfMode = false }) {
 
         const userScopeParams = buildTelemetryScopeParams(userKey, uid);
 
-        const [lRes, sRes] = await Promise.allSettled([
+        const [lRes, sRes, hbRes] = await Promise.allSettled([
           getLogs({ ...params, ...userScopeParams, page: 1, limit: LOGS_PAGE_SIZE }),
           getScreenshots({ ...params, ...userScopeParams, page: 1, limit: SHOTS_PAGE_SIZE }),
+          getUserHeartbeat({ ...userScopeParams, threshold_minutes: 10 }),
         ]);
 
         if (!mounted) return;
@@ -1299,6 +1311,11 @@ export default function UserDetail({ selfMode = false }) {
         setLogs(logsNorm);
         const shotsNorm = sRes.status === "fulfilled" ? normalizeListResponse(sRes.value) : { items: [], total: 0 };
         setShots(shotsNorm);
+        if (hbRes.status === "fulfilled" && hbRes.value) {
+          setHeartbeat(hbRes.value);
+        } else {
+          setHeartbeat(null);
+        }
         const merged =
           logsNorm.merged_tracker_count != null
             ? logsNorm.merged_tracker_count
@@ -1321,6 +1338,7 @@ export default function UserDetail({ selfMode = false }) {
         setUser(null);
         setLogs({ items: [], total: 0 });
         setShots({ items: [], total: 0 });
+        setHeartbeat(null);
       } finally {
         if (!mounted) return;
         setUserLoading(false);
@@ -1512,10 +1530,52 @@ export default function UserDetail({ selfMode = false }) {
                   <Chip size="small" variant="outlined" label={`Department: ${user?.department || "—"}`} />
                   <Chip size="small" variant="outlined" label={`Role: ${user?.role_key || "—"}`} />
                   <Chip size="small" variant="outlined" label={`User ID: ${extensionUserId(user) || "—"}`} />
-                  <Chip size="small" variant="outlined" label={user?.is_active ? "Active" : "Inactive"} />
+                  <Chip size="small" variant="outlined" label={user?.is_active ? "Account: active" : "Account: inactive"} />
+                  <Tooltip
+                    title={
+                      heartbeat?.last_heartbeat_at
+                        ? `Last heartbeat (UTC): ${heartbeat.last_heartbeat_at}`
+                        : "No extension heartbeat recorded yet for this user id."
+                    }
+                  >
+                    <Chip
+                      size="small"
+                      color={heartbeat?.online ? "success" : "default"}
+                      variant={heartbeat?.online ? "filled" : "outlined"}
+                      label={
+                        heartbeat?.last_heartbeat_at
+                          ? heartbeat?.online
+                            ? "Extension online"
+                            : "Extension offline"
+                          : "Extension: no heartbeat"
+                      }
+                    />
+                  </Tooltip>
                 </>
               ) : (
-                <Chip size="small" variant="outlined" label={`Department: ${user?.department || me?.department || "—"}`} />
+                <>
+                  <Chip size="small" variant="outlined" label={`Department: ${user?.department || me?.department || "—"}`} />
+                  <Tooltip
+                    title={
+                      heartbeat?.last_heartbeat_at
+                        ? `Last heartbeat (UTC): ${heartbeat.last_heartbeat_at}`
+                        : "No extension heartbeat recorded yet."
+                    }
+                  >
+                    <Chip
+                      size="small"
+                      color={heartbeat?.online ? "success" : "default"}
+                      variant={heartbeat?.online ? "filled" : "outlined"}
+                      label={
+                        heartbeat?.last_heartbeat_at
+                          ? heartbeat?.online
+                            ? "Extension online"
+                            : "Extension offline"
+                          : "Extension: no heartbeat"
+                      }
+                    />
+                  </Tooltip>
+                </>
               )}
             </Stack>
 
@@ -1554,7 +1614,7 @@ export default function UserDetail({ selfMode = false }) {
       <Paper className="glass" elevation={0} sx={{ p: 1 }}>
         <Stack direction="row" alignItems="center" flexWrap="wrap" gap={1} sx={{ px: 0.5 }}>
           <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ flex: 1, minWidth: 0 }}>
-            <Tab label={`Logs (${formatNumber(logs?.total || logs?.items?.length || 0)})`} />
+            <Tab label={`Activity logs (${formatNumber(logs?.total || logs?.items?.length || 0)})`} />
             <Tab label={`Screenshots (${formatNumber(shots?.total || shots?.items?.length || 0)})`} />
           </Tabs>
           {mergedTrackerCount != null && mergedTrackerCount > 1 ? (
@@ -1592,7 +1652,7 @@ export default function UserDetail({ selfMode = false }) {
             </Box>
           ) : null}
         </Paper>
-      ) : (
+      ) : tab === 1 ? (
         <Paper className="glass" elevation={0} sx={{ p: 2 }}>
           <ScreenshotsSection
             rows={shots?.items || []}
@@ -1610,7 +1670,7 @@ export default function UserDetail({ selfMode = false }) {
             </Box>
           ) : null}
         </Paper>
-      )}
+      ) : null}
     </Box>
   );
 }

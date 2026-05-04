@@ -13,7 +13,7 @@ def issue_token(claims: Dict[str, Any]) -> str:
     payload = {
         **claims,
         "iat": now,
-        "exp": now + timedelta(hours=JWT_EXPIRES_HOURS),
+        "exp": now + timedelta(hours=float(JWT_EXPIRES_HOURS)),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 

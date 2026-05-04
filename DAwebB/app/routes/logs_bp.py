@@ -28,6 +28,7 @@ _LOG_FIELDS = {
     "operation": 1,
     "capture_screen": 1,
     "screenshot_id": 1,
+    "client_delivery_id": 1,
     "created_at": 1,
 }
 

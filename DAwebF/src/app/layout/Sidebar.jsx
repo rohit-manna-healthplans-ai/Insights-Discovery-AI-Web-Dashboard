@@ -30,10 +30,10 @@ export function SidebarContent({ onNavigate }) {
   const canSeeUsers = role === ROLE_C_SUITE || role === ROLE_DEPT_HEAD;
   const isMember = role === ROLE_DEPT_MEMBER;
 
-  // Simple nav: directory for managers / C-Suite; own logs & screenshots for members.
+  // Simple nav: directory for managers / C-Suite; own activity logs & screenshots for members.
   const navItems = [
     ...(isMember
-      ? [{ label: "My logs & screenshots", to: "/dashboard/my-activity", icon: <ArticleOutlinedIcon /> }]
+      ? [{ label: "My activity logs & screenshots", to: "/dashboard/my-activity", icon: <ArticleOutlinedIcon /> }]
       : []),
     ...(canSeeUsers ? [{ label: "Users", to: "/dashboard/users", icon: <PeopleAltRoundedIcon /> }] : []),
   ];
@@ -112,7 +112,7 @@ export function SidebarContent({ onNavigate }) {
 
       <Box sx={{ px: 0.5 }}>
         <Typography variant="caption" className="muted">
-          v1.0 • Users • Logs • Screenshots
+          v1.0 • Users • Activity logs • Screenshots
         </Typography>
       </Box>
     </Box>

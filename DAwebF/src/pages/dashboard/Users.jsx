@@ -64,6 +64,32 @@ function roleLabel(role) {
   return r || "(unknown)";
 }
 
+/** Card/list chip from `/api/users` enrichment (`user_heartbeats`, default 10 min threshold). */
+function extensionStatusPresentation(u) {
+  const last = u?.extension_last_heartbeat_at;
+  const online = u?.extension_online;
+  const thr = u?.extension_heartbeat_threshold_minutes ?? 10;
+  if (last == null || last === "") {
+    return {
+      label: "Extension: no heartbeat",
+      color: "default",
+      title: `No row in user_heartbeats yet, or extension has not checked in. When it does, online = last ping within ${thr} min.`,
+    };
+  }
+  if (online === true) {
+    return {
+      label: "Extension online",
+      color: "success",
+      title: `Last heartbeat: ${last} (within ${thr} min)`,
+    };
+  }
+  return {
+    label: "Extension offline",
+    color: "warning",
+    title: `Last heartbeat: ${last} (older than ${thr} min)`,
+  };
+}
+
 function initials(nameOrEmail) {
   const s = String(nameOrEmail || "").trim();
   if (!s) return "U";
@@ -75,6 +101,7 @@ function initials(nameOrEmail) {
 function UserCard({ u, onOpen }) {
   const title = u.full_name || u.company_username_norm || u.company_username || "User";
   const sub = u.company_username_norm || u.company_username || "—";
+  const ext = extensionStatusPresentation(u);
 
   return (
     <Paper
@@ -111,17 +138,15 @@ function UserCard({ u, onOpen }) {
               label={roleLabel(u.role_key)}
               sx={String(u.role_key).toUpperCase() === ROLE_C_SUITE ? undefined : chipSx}
             />
-            <Chip
-              size="small"
-              color={u.is_active ? "success" : "warning"}
-              variant="outlined"
-              label={u.is_active ? "Active" : "Inactive"}
-              sx={
-                u.is_active
-                  ? { "& .MuiChip-label": { fontWeight: 600 } }
-                  : { color: "var(--text)", borderColor: "var(--border-2)", "& .MuiChip-label": { fontWeight: 700 } }
-              }
-            />
+            <Tooltip title={ext.title}>
+              <Chip
+                size="small"
+                color={ext.color}
+                variant="outlined"
+                label={ext.label}
+                sx={{ "& .MuiChip-label": { fontWeight: 700, fontSize: 11 } }}
+              />
+            </Tooltip>
           </Stack>
         </Box>
 
@@ -136,6 +161,7 @@ function UserCard({ u, onOpen }) {
 }
 
 function UserRow({ u, onOpen }) {
+  const ext = extensionStatusPresentation(u);
   return (
     <Paper
       className="glass glass-hover"
@@ -169,17 +195,9 @@ function UserRow({ u, onOpen }) {
           label={roleLabel(u.role_key)}
           sx={String(u.role_key).toUpperCase() === ROLE_C_SUITE ? undefined : chipSx}
         />
-        <Chip
-          size="small"
-          color={u.is_active ? "success" : "warning"}
-          variant="outlined"
-          label={u.is_active ? "Active" : "Inactive"}
-          sx={
-            u.is_active
-              ? { "& .MuiChip-label": { fontWeight: 600 } }
-              : { color: "var(--text)", borderColor: "var(--border-2)", "& .MuiChip-label": { fontWeight: 700 } }
-          }
-        />
+        <Tooltip title={ext.title}>
+          <Chip size="small" color={ext.color} variant="outlined" label={ext.label} sx={{ "& .MuiChip-label": { fontWeight: 700, fontSize: 11 } }} />
+        </Tooltip>
       </Stack>
     </Paper>
   );
@@ -227,7 +245,6 @@ export default function Users() {
     pc_username: "",
     department: "",
     role_key: ROLE_DEPT_MEMBER,
-    is_active: true,
   });
 
   async function loadAll() {
@@ -278,10 +295,12 @@ export default function Users() {
     if (roleFilter !== "all") {
       rows = rows.filter((u) => String(u.role_key || "").toUpperCase() === roleFilter);
     }
-    if (statusFilter === "active") {
-      rows = rows.filter((u) => u.is_active === true);
-    } else if (statusFilter === "inactive") {
-      rows = rows.filter((u) => u.is_active !== true);
+    if (statusFilter === "ext_online") {
+      rows = rows.filter((u) => u.extension_online === true);
+    } else if (statusFilter === "ext_offline") {
+      rows = rows.filter((u) => u.extension_online === false && u.extension_last_heartbeat_at);
+    } else if (statusFilter === "ext_none") {
+      rows = rows.filter((u) => !u.extension_last_heartbeat_at);
     }
 
     // search
@@ -344,7 +363,6 @@ export default function Users() {
       pc_username: "",
       department: "",
       role_key: ROLE_DEPT_MEMBER,
-      is_active: true,
     });
   }
 
@@ -364,7 +382,6 @@ export default function Users() {
       pc_username: u?.pc_username || "",
       department: u?.department || "",
       role_key: String(u?.role_key || ROLE_DEPT_MEMBER).toUpperCase(),
-      is_active: Boolean(u?.is_active ?? true),
     });
     setEditOpen(true);
   }
@@ -386,7 +403,6 @@ export default function Users() {
         pc_username: form.pc_username,
         department: form.department,
         role_key: form.role_key,
-        is_active: form.is_active,
       });
       setCreateOpen(false);
       await loadAll();
@@ -408,7 +424,6 @@ export default function Users() {
         pc_username: form.pc_username,
         department: form.department,
         role_key: form.role_key,
-        is_active: form.is_active,
       };
       if (form.password) payload.password = form.password;
 
@@ -582,11 +597,12 @@ export default function Users() {
               </FormControl>
 
               <FormControl size="small" fullWidth>
-                <InputLabel>Status</InputLabel>
-                <Select value={statusFilter} label="Status" onChange={(e) => setStatusFilter(e.target.value)}>
+                <InputLabel>Extension</InputLabel>
+                <Select value={statusFilter} label="Extension" onChange={(e) => setStatusFilter(e.target.value)}>
                   <MenuItem value="all">All</MenuItem>
-                  <MenuItem value="active">Active</MenuItem>
-                  <MenuItem value="inactive">Inactive</MenuItem>
+                  <MenuItem value="ext_online">Extension online</MenuItem>
+                  <MenuItem value="ext_offline">Extension offline (seen before)</MenuItem>
+                  <MenuItem value="ext_none">No heartbeat yet</MenuItem>
                 </Select>
               </FormControl>
 
@@ -729,13 +745,6 @@ export default function Users() {
                 <MenuItem value={ROLE_DEPT_MEMBER}>Department Member</MenuItem>
                 <MenuItem value={ROLE_DEPT_HEAD}>Department Head</MenuItem>
                 <MenuItem value={ROLE_C_SUITE}>C-Suite</MenuItem>
-              </Select>
-            </FormControl>
-            <FormControl>
-              <InputLabel>Active</InputLabel>
-              <Select value={form.is_active ? "yes" : "no"} label="Active" onChange={(e) => setForm((s) => ({ ...s, is_active: e.target.value === "yes" }))}>
-                <MenuItem value="yes">Yes</MenuItem>
-                <MenuItem value="no">No</MenuItem>
               </Select>
             </FormControl>
           </Stack>

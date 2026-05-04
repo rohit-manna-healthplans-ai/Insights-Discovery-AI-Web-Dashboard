@@ -25,9 +25,10 @@ def azure_credentials_configured() -> bool:
 def parse_https_blob_url(url: str) -> Optional[Tuple[str, str, str]]:
     """
     Parse https://{account}.blob.core.windows.net/{container}/{blob...}
+    Strips any existing query string (e.g. old SAS) before parsing the path.
     Returns (account_name, container_name, blob_name) or None.
     """
-    u = (url or "").strip()
+    u = (url or "").strip().split("?", 1)[0].strip()
     if not u.startswith("https://"):
         return None
     parsed = urlparse(u)
@@ -75,9 +76,33 @@ def resolve_blob_location(doc: Dict[str, Any]) -> Optional[Tuple[str, str, str]]
     return env_account, container, fp
 
 
+def sign_read_sas_https_blob_url(blob_https_url: str) -> Tuple[str, int]:
+    """
+    Same flow as a standalone Azure script: parse a blob HTTPS URL, then call
+    ``generate_blob_sas`` with ``AZURE_STORAGE_ACCOUNT_NAME`` / ``AZURE_STORAGE_ACCOUNT_KEY``.
+
+    The storage account in the URL must match the configured account (the key is account-scoped).
+    """
+    base = (blob_https_url or "").strip().split("?", 1)[0].strip()
+    parsed = parse_https_blob_url(base)
+    if not parsed:
+        raise ValueError("Invalid Azure Blob HTTPS URL (expected https://<account>.blob.core.windows.net/<container>/<blob>)")
+    acc, container_name, blob_name = parsed
+    env_account = (_get("AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not env_account:
+        raise RuntimeError("AZURE_STORAGE_ACCOUNT_NAME is not set")
+    if acc.lower() != env_account.lower():
+        raise ValueError(
+            f"Blob URL account {acc!r} does not match AZURE_STORAGE_ACCOUNT_NAME {env_account!r}; "
+            "use the same account as in .env or fix the URL."
+        )
+    return build_read_sas_url(account_name=env_account, container_name=container_name, blob_name=blob_name)
+
+
 def build_read_sas_url(*, account_name: str, container_name: str, blob_name: str) -> Tuple[str, int]:
     """
     Returns (full_https_url_with_sas, expiry_minutes).
+    Mirrors ``generate_blob_sas`` + read permission + time-bounded expiry used for screenshot images.
     """
     try:
         from azure.storage.blob import BlobSasPermissions, generate_blob_sas

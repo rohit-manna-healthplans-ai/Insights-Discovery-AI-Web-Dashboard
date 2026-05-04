@@ -1,8 +1,8 @@
 # Discovery Agent API
 
-Flask + PyMongo backend. Collections: `users`, `departments`, `logs`, `screenshots`.
+Flask + PyMongo backend. Collections: `users`, `departments`, `logs`, `screenshots`, `validation_logs`, `user_heartbeats`.
 
-**MongoDB:** Point `MONGO_URI` at the same cluster as `discovery-ai-backend-main` and set `MONGO_DB_NAME=test` (or `MONGO_DBNAME=test`) so the dashboard shares the `test` database you use there.
+**Database:** Use `AZURE_COSMOS_MONGO_URI` (Azure Cosmos DB for MongoDB, `mongodb+srv://…cosmos.azure.com/…`) or `MONGO_URI` for a standard MongoDB host. Set `MONGO_DB_NAME` to the same logical database as the extension backend (e.g. `IDAI_Web_Database` on Cosmos, or `test` locally). Cosmos URIs get driver options aligned with `extension-repo/export_to_combined_csv_file.py` (SCRAM-SHA-256, `retryWrites` false when appropriate).
 
 ## Setup
 
@@ -12,7 +12,7 @@ python -m venv venv
 .\venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 # includes flask-compress for gzip JSON responses (faster over slow networks)
-copy .env.example .env     # edit MONGO_URI / JWT_SECRET
+copy .env.example .env     # edit AZURE_COSMOS_MONGO_URI or MONGO_URI / JWT_SECRET / MONGO_DB_NAME
 python run.py
 ```
 

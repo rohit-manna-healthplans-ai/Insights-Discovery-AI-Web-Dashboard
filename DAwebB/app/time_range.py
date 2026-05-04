@@ -27,6 +27,17 @@ def range_iso_strings(from_str: str, to_str: str) -> tuple[str, str]:
     return start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z")
 
 
+def range_utc_datetimes(from_str: str, to_str: str) -> tuple[datetime, datetime]:
+    """
+    Inclusive UTC day range [from, to] as datetime objects for BSON Date fields
+    (e.g. validation_logs.ts, user_heartbeats.last_heartbeat_at).
+    """
+    start = _parse_ymd(from_str)
+    end_day = _parse_ymd(to_str)
+    end = end_day + timedelta(days=1) - timedelta(microseconds=1)
+    return start, end
+
+
 def mongo_time_or_query(start_iso: str, end_iso: str) -> dict:
     """
     Prefer event time `ts`; if missing, fall back to `created_at` (batch insert time).

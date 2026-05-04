@@ -34,3 +34,17 @@ export async function getScreenshotSasUrl(screenshotId) {
   const res = await http.get(`/api/screenshots/${id}/sas-url`);
   return unwrap(res); // { url } or { sas_url }
 }
+
+/** Extension heartbeat(s) for tracker id(s); optional threshold_minutes (default 10). */
+export async function getUserHeartbeat(params = {}) {
+  const res = await http.get("/api/user-heartbeat", { params });
+  return unwrap(res);
+}
+
+/** Grouped validation pipelines + screenshot rows with validation_stages (requires from/to). */
+export async function getValidationOverview(params = {}) {
+  const res = await http.get("/api/validation-overview", {
+    params: { ...withDefaultRange(params) },
+  });
+  return unwrap(res);
+}

@@ -41,8 +41,8 @@ def login():
     u = _find_login_user(email)
     if not u or not _check_pw(password, u.get("password_hash") or ""):
         return jsonify({"ok": False, "error": "Invalid credentials"}), 401
-    if not bool(u.get("is_active", True)):
-        return jsonify({"ok": False, "error": "User is inactive"}), 403
+    if str(u.get("approval_status") or "").upper() == "REJECTED":
+        return jsonify({"ok": False, "error": "Account is not approved"}), 403
 
     uid = str(u.get("user_mac_id") or u.get("_id") or "")
     if not uid:
@@ -103,7 +103,7 @@ def register():
         "last_seen_at": utc_now_iso(),
         "created_at": utc_now_iso(),
         "password_hash": _hash_pw(password),
-        "is_active": True,
+        "approval_status": "APPROVED",
     }
     db[COL_USERS].insert_one(doc)
     return jsonify(
@@ -127,8 +127,8 @@ def forgot_password():
     u = db[COL_USERS].find_one({"company_username_norm": email})
     if not u:
         return jsonify({"ok": False, "error": "User not found"}), 404
-    if u.get("is_active") is False:
-        return jsonify({"ok": False, "error": "Account is disabled"}), 403
+    if str(u.get("approval_status") or "").upper() == "REJECTED":
+        return jsonify({"ok": False, "error": "Account is not approved"}), 403
 
     db[COL_USERS].update_one(
         {"_id": u["_id"]},

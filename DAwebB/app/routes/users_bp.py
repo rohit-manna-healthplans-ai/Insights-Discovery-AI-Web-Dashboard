@@ -1,14 +1,90 @@
+from datetime import datetime, timedelta, timezone
+
 from bson import ObjectId
 from flask import Blueprint, jsonify, request
 
 from app.auth_jwt import require_auth
-from app.config import COL_PLUGIN_USERS, COL_USERS
+from app.config import COL_PLUGIN_USERS, COL_USERS, COL_USER_HEARTBEATS
 from app.db import get_db, utc_now_iso
+from app.identity import resolve_telemetry_user_ids
 from app.rbac import list_users_filter_query, load_user_by_id, role_from_user
 from app.serializers import plugin_user_public, user_public
 import bcrypt
 
 bp = Blueprint("users", __name__, url_prefix="/api/users")
+
+_HEARTBEAT_LIST_THRESHOLD_MIN = 10
+
+
+def _heartbeat_ts_utc(raw) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=timezone.utc)
+        return raw.astimezone(timezone.utc)
+    return None
+
+
+def _enrich_users_extension_status(db, items: list, threshold_minutes: int = _HEARTBEAT_LIST_THRESHOLD_MIN) -> None:
+    """
+    Add extension_online + extension_last_heartbeat_at from user_heartbeats (same rule as /api/user-heartbeat).
+    Merges all tracker ids for a work email when present.
+    """
+    if not items:
+        return
+    now = datetime.now(timezone.utc)
+    try:
+        thr = max(1, min(120, int(threshold_minutes)))
+    except (TypeError, ValueError):
+        thr = _HEARTBEAT_LIST_THRESHOLD_MIN
+    cutoff = now - timedelta(minutes=thr)
+
+    email_cache: dict[str, list] = {}
+    all_ids: set[str] = set()
+
+    for pub in items:
+        email = (pub.get("company_username_norm") or pub.get("company_username") or "").strip()
+        tids: list[str] = []
+        if "@" in email:
+            key = email.lower()
+            if key not in email_cache:
+                ids, _ = resolve_telemetry_user_ids(db, {"company_username": email})
+                email_cache[key] = list(ids) if ids else []
+            tids = list(email_cache[key])
+        else:
+            tid = str(pub.get("tracker_user_id") or pub.get("user_id") or pub.get("user_mac_id") or "").strip()
+            if tid:
+                tids = [tid]
+        pub["_tid_list"] = tids
+        for x in tids:
+            if x:
+                all_ids.add(x)
+
+    latest_by_uid: dict[str, datetime] = {}
+    if all_ids:
+        col = db[COL_USER_HEARTBEATS]
+        for row in col.find({"user_id": {"$in": list(all_ids)}}, {"user_id": 1, "last_heartbeat_at": 1}):
+            uid = str(row.get("user_id") or "").strip()
+            ts = _heartbeat_ts_utc(row.get("last_heartbeat_at"))
+            if not uid or ts is None:
+                continue
+            prev = latest_by_uid.get(uid)
+            if prev is None or ts > prev:
+                latest_by_uid[uid] = ts
+
+    for pub in items:
+        tids = pub.pop("_tid_list", []) or []
+        merged_latest: datetime | None = None
+        for tid in tids:
+            ts = latest_by_uid.get(tid)
+            if ts and (merged_latest is None or ts > merged_latest):
+                merged_latest = ts
+        iso = merged_latest.isoformat().replace("+00:00", "Z") if merged_latest else None
+        online = bool(merged_latest and merged_latest >= cutoff)
+        pub["extension_last_heartbeat_at"] = iso
+        pub["extension_online"] = None if iso is None else online
+        pub["extension_heartbeat_threshold_minutes"] = thr
 
 
 def _hash_pw(password: str) -> str:
@@ -128,6 +204,7 @@ def list_users():
     items = [user_public(d) for d in cur]
     if r == "C_SUITE":
         items = _merge_plugin_users_for_csuite(items)
+    _enrich_users_extension_status(db, items)
     return jsonify({"ok": True, "data": items})
 
 
@@ -151,6 +228,7 @@ def list_pending_users():
         return jsonify({"ok": False, "error": "Forbidden"}), 403
 
     rows = [user_public(d) for d in db[COL_USERS].find(query).sort("created_at", 1)]
+    _enrich_users_extension_status(db, rows)
     return jsonify({"ok": True, "data": rows})
 
 
@@ -182,7 +260,6 @@ def approve_user(identifier: str):
         {
             "$set": {
                 "approval_status": "APPROVED",
-                "is_active": True,
                 "approved_by": actor_id,
                 "approved_at": utc_now_iso(),
                 "rejected_reason": None,
@@ -223,7 +300,6 @@ def reject_user(identifier: str):
         {
             "$set": {
                 "approval_status": "REJECTED",
-                "is_active": False,
                 "approved_by": None,
                 "approved_at": None,
                 "rejected_reason": reason,
@@ -307,7 +383,6 @@ def create_user():
         "last_seen_at": utc_now_iso(),
         "created_at": utc_now_iso(),
         "password_hash": _hash_pw(password),
-        "is_active": bool(body.get("is_active", True)),
         "approval_status": "APPROVED",
         "approved_by": str(actor.get("user_mac_id") or actor.get("_id") or ""),
         "approved_at": utc_now_iso(),
@@ -330,7 +405,7 @@ def patch_user(company_username: str):
 
     body = request.get_json(force=True, silent=True) or {}
     updates = {}
-    for k in ("full_name", "contact_no", "pc_username", "department", "role_key", "is_active"):
+    for k in ("full_name", "contact_no", "pc_username", "department", "role_key"):
         if k in body:
             updates[k] = body[k]
     if body.get("password"):
