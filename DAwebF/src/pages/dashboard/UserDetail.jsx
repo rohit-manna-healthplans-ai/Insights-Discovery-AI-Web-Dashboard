@@ -226,8 +226,12 @@ function inDateRange(ymd, from, to) {
 
 function logScreenshotId(r) {
   const v = r?.screenshot_id ?? r?.screenshotId;
-  if (v === null || v === undefined || v === "") return null;
-  return String(v);
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (lower === "null" || lower === "undefined") return null;
+  return s;
 }
 
 /** Activity log row primary id (`log_id` from extension, else Mongo `_id`). */
